@@ -1,2 +1,5 @@
-add_library(libbase INTERFACE)
-target_include_directories(libbase INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+add_library(libbase STATIC
+        libbase/fast_random.cpp
+)
+
+target_include_directories(libbase PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

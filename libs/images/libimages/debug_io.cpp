@@ -1,10 +1,14 @@
+#include "debug_io.h"
+
 #include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <libbase/runtime_assert.h>
-#include <libimages/debug_io.h>
+#include <libbase/fast_random.h>
+
 #include <libimages/image_io.h>
 #include <limits>
+#include <map>
 
 namespace libimages::debug_io {
 
@@ -122,8 +126,43 @@ image8u visualize_minmax(const image32f &img, bool ignore_border) {
     return out;
 }
 
+image8u colorize_labels_random(const image32i &labels, int void_value, std::uint32_t seed) {
+    rassert(labels.channels() == 1, "colorize_labels_random expects 1-channel labels", labels.channels());
+
+    const int w = labels.width();
+    const int h = labels.height();
+
+    FastRandom r(seed);
+    std::map<int, std::tuple<uint8_t, uint8_t, uint8_t>> mapped_colors;
+
+    image8u out(w, h, 3);
+    for (int j = 0; j < h; ++j) {
+        for (int i = 0; i < w; ++i) {
+            const int label = labels(j, i);
+            if (label == void_value) {
+                // black color
+                out(j, i, 0) = 0;
+                out(j, i, 1) = 0;
+                out(j, i, 2) = 0;
+                continue;
+            }
+
+            if (mapped_colors.count(label) == 0) {
+                std::tuple<uint8_t, uint8_t, uint8_t> random_color = {r.nextInt(0, 255), r.nextInt(0, 255), r.nextInt(0, 255)};
+                mapped_colors[label] = random_color;
+            }
+
+            std::tuple<uint8_t, uint8_t, uint8_t> label_color = mapped_colors[label];
+            out(j, i, 0) = std::get<0>(label_color);
+            out(j, i, 1) = std::get<1>(label_color);
+            out(j, i, 2) = std::get<2>(label_color);
+        }
+    }
+
+    return out;
+}
+
 void dump_image(const std::string &path, const image8u &img, bool verbose, bool force, int jpg_quality) {
-#if DEBUG_IO_IMAGE_SAVE_ENABLED
     (void)force;
     if (verbose) {
         std::cerr << "[debug_io] saving " << path << " (" << img.width() << "x" << img.height() << "x" << img.channels()
@@ -131,16 +170,6 @@ void dump_image(const std::string &path, const image8u &img, bool verbose, bool 
     }
     ensure_dir_exists_for_file(path);
     save_image(img, path, jpg_quality);
-#else
-    if (force || DEBUG_IO_FORCE_IMAGE_SAVE_ENABLED) {
-        if (verbose) {
-            std::cerr << "[debug_io] forced saving " << path << " (" << img.width() << "x" << img.height() << "x"
-                      << img.channels() << ")\n";
-        }
-        ensure_dir_exists_for_file(path);
-        save_image(img, path, jpg_quality);
-    }
-#endif
 }
 
 void dump_image(const std::string &path, const image32f &img, bool verbose, bool force, int jpg_quality) {

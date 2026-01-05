@@ -50,6 +50,7 @@ extern template class Image<std::uint8_t>;
 extern template class Image<float>;
 
 using image8u = Image<std::uint8_t>;
+using image32i = Image<int>;
 using image32f = Image<float>;
 
 } // namespace libimages

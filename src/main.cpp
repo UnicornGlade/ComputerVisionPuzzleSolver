@@ -42,6 +42,21 @@ inline constexpr float kClusterKD =
 inline constexpr float kClusterKM =
     20000.0f; // Larger -> allow more magnitude spread, merges more. Smaller -> splits more.
 
+// Segment fitting filters.
+inline constexpr int kMinComponentPixels = 25; // Larger -> fewer segments visualized. Smaller -> more tiny segments.
+// inline constexpr float kMinMeanMagnitude = 10.0f; // Larger -> keep only strong edges. Smaller -> keep weak/noisy edges.
+// inline constexpr float kMinSegmentLengthPx =
+    // 12.0f; // Larger -> discard short segments. Smaller -> keep short fragments.
+
+// Visualization.
+// inline constexpr float kNotchLengthPx = 10.0f; // Larger -> longer direction notch, smaller -> shorter.
+
+// Connected components visualization.
+// inline constexpr int kLargeComponentMinSize =
+    // 100; // Larger -> show fewer components in *_large_* visualizations. Smaller -> show more.
+// inline constexpr float kVoidLabel =
+    // -1.0f; // Label value treated as "empty" (painted black) in random-color label visualization.
+
 }
 
 // NOTE: All comments are in English by request.
@@ -131,6 +146,24 @@ static void merge_stats_after_union(const DisjointSetUnion& dsu, CompStats& s,
 }
 
 // ---- Snapshot visualizations ----
+
+static image8u make_image_component_colorized(const DisjointSetUnion& dsu, int w, int h, int min_dsu_size=1) {
+    constexpr int EMPTY_PIXEL_COMPONENT_ID = -1;
+    image32i component_id(w, h, 1);
+    component_id.fill(EMPTY_PIXEL_COMPONENT_ID);
+
+    for (int j = 0; j < h; ++j) {
+        for (int i = 0; i < w; ++i) {
+            int id = EMPTY_PIXEL_COMPONENT_ID;
+            if (dsu.set_size(j * w + i) > min_dsu_size) {
+                id = 1 + dsu.find(j * w + i);
+            }
+            component_id(j, i) = id;
+        }
+    }
+
+    return debug_io::colorize_labels_random(component_id, EMPTY_PIXEL_COMPONENT_ID);
+}
 
 static image32f make_image_component_size_log(const DisjointSetUnion& dsu, int w, int h) {
   image32f out(w, h, 1);
@@ -280,23 +313,33 @@ static void dump_unionfind_snapshot(const fs::path& out_root, std::size_t unions
   const fs::path dir = out_root / iters_dir_name(unions_done);
   fs::create_directories(dir);
 
-  // 1) component sizes (log-scaled)
-  libimages::debug_io::dump_image((dir / ("00_component_sizes_log" + std::string(cfg::kDefaultDumpExt))).string(),
+  // 1) colorized components
+  libimages::debug_io::dump_image((dir / ("00_components_randomly_colored" + std::string(cfg::kDefaultDumpExt))).string(),
+                                  make_image_component_colorized(dsu, w, h),
+                                  cfg::kDumpVerbose, cfg::kDumpForceOverwrite);
+
+    // 2) colorized large components
+    libimages::debug_io::dump_image((dir / ("01_components_randomly_colored_only_large" + std::string(cfg::kDefaultDumpExt))).string(),
+                                    make_image_component_colorized(dsu, w, h, cfg::kMinComponentPixels),
+                                    cfg::kDumpVerbose, cfg::kDumpForceOverwrite);
+
+  // 3) component sizes (log-scaled)
+  libimages::debug_io::dump_image((dir / ("02_component_sizes_log" + std::string(cfg::kDefaultDumpExt))).string(),
                                   make_image_component_size_log(dsu, w, h),
                                   cfg::kDumpVerbose, cfg::kDumpForceOverwrite);
 
-  // 2) mean direction (HSV)
-  libimages::debug_io::dump_image((dir / ("01_direction_mean_hsv" + std::string(cfg::kDefaultDumpExt))).string(),
+  // 4) mean direction (HSV)
+  libimages::debug_io::dump_image((dir / ("03_direction_mean_hsv" + std::string(cfg::kDefaultDumpExt))).string(),
                                   make_image_direction_mean_hsv(dsu, stats, w, h),
                                   cfg::kDumpVerbose, cfg::kDumpForceOverwrite);
 
-  // 3) direction range
-  libimages::debug_io::dump_image((dir / ("02_direction_range" + std::string(cfg::kDefaultDumpExt))).string(),
+  // 5) direction range
+  libimages::debug_io::dump_image((dir / ("04_direction_range" + std::string(cfg::kDefaultDumpExt))).string(),
                                   make_image_direction_range(dsu, stats, w, h),
                                   cfg::kDumpVerbose, cfg::kDumpForceOverwrite);
 
-  // 4) magnitude range
-  libimages::debug_io::dump_image((dir / ("03_magnitude_range" + std::string(cfg::kDefaultDumpExt))).string(),
+  // 6) magnitude range
+  libimages::debug_io::dump_image((dir / ("05_magnitude_range" + std::string(cfg::kDefaultDumpExt))).string(),
                                   make_image_magnitude_range(dsu, stats, w, h),
                                   cfg::kDumpVerbose, cfg::kDumpForceOverwrite);
 }

@@ -78,6 +78,7 @@ template <typename T> const T &Image<T>::operator()(int j, int i, int c, std::so
 
 // Explicit instantiations (avoid recompiling template code in every TU)
 template class Image<std::uint8_t>;
+template class Image<int>;
 template class Image<float>;
 
 } // namespace libimages
