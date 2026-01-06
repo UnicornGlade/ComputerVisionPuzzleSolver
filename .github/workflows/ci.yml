@@ -44,3 +44,4 @@ jobs:
           ctest --test-dir build
           --output-on-failure
           --no-tests=error
+          -V
