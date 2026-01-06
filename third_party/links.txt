@@ -1,1 +1,2 @@
+https://github.com/google/googletest/releases/tag/v1.17.0 - BSD License
 https://github.com/nothings/stb - MIT License
