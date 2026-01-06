@@ -10,21 +10,58 @@
 #include <libimages/image_io.h>
 
 #include "algorithms/find_segments.h"
-#include "libimages/algorithms/downscale.h"
+#include "algorithms/find_lines.h"
 
 namespace fs = std::filesystem;
 
 namespace cfg {
-inline constexpr float kDownscaleRatio = 8.0f; // 1 -> no scale, >1 treated as 1/kDownscaleRatio
+inline constexpr float kDownscaleRatio = 8.0f;
 }
 
 using libimages::image8u;
 
-int main(int argc, char **argv) {
+static float normalize_downscale_ratio(float r) {
+    rassert(r > 0.0f, "kDownscaleRatio must be > 0", r);
+    if (r > 1.0f) r = 1.0f / r;
+    rassert(r > 0.0f && r <= 1.0f, "normalized ratio must be in (0,1]", r);
+    return r;
+}
+
+static image8u downscale_nearest(const image8u& img, float downscale_ratio) {
+    const float s = normalize_downscale_ratio(downscale_ratio);
+
+    const int w = img.width();
+    const int h = img.height();
+    const int c = img.channels();
+    rassert(w > 0 && h > 0 && c > 0, "Invalid input image", w, h, c);
+
+    if (std::fabs(s - 1.0f) < 1e-7f) return img;
+
+    const int nw = std::max(1, static_cast<int>(std::lround(static_cast<float>(w) * s)));
+    const int nh = std::max(1, static_cast<int>(std::lround(static_cast<float>(h) * s)));
+
+    image8u out(nw, nh, c);
+
+    const float inv_s = 1.0f / s;
+    for (int j = 0; j < nh; ++j) {
+        const int sj = std::clamp(static_cast<int>(std::floor((static_cast<float>(j) + 0.5f) * inv_s)), 0, h - 1);
+        for (int i = 0; i < nw; ++i) {
+            const int si = std::clamp(static_cast<int>(std::floor((static_cast<float>(i) + 0.5f) * inv_s)), 0, w - 1);
+            if (c == 1) {
+                out(j, i) = img(sj, si);
+            } else {
+                for (int k = 0; k < c; ++k) out(j, i, k) = img(sj, si, k);
+            }
+        }
+    }
+    return out;
+}
+
+int main(int argc, char** argv) {
     try {
         if (argc < 3) {
             std::cerr << "Usage:\n"
-                      << "  segments_app <input.(png|jpg|jpeg)> <output_dir> [debug_dir]\n";
+                      << "  app <input.(png|jpg|jpeg)> <output_dir> [debug_segments_dir]\n";
             return 1;
         }
 
@@ -36,19 +73,14 @@ int main(int argc, char **argv) {
         const fs::path debug_dir = has_debug ? fs::path(argv[3]) : fs::path();
 
         image8u input = libimages::load_image(input_path.string());
-        libimages::debug_io::dump_image((out_dir / "00_input.png").string(), input, /*verbose=*/true, /*force=*/true);
+        libimages::debug_io::dump_image((out_dir / "00_input.png").string(), input, true, true);
 
-        // Downscale in main (so coordinates in segments match the image passed into find_segments()).
-        input = libimages::downscale_area(input, cfg::kDownscaleRatio);
-        libimages::debug_io::dump_image((out_dir / "01_input_downscaled.png").string(), input, /*verbose=*/true,
-                                        /*force=*/true);
+        input = downscale_nearest(input, cfg::kDownscaleRatio);
+        libimages::debug_io::dump_image((out_dir / "01_input_downscaled.png").string(), input, true, true);
 
-        find_segments::Params params; // defaults are "current"
-        // Example tweak (optional):
-        // params.min_segment_pixels = 25;
-
+        find_segments::Params sp; // defaults
         find_segments::DebugParams dbg;
-        find_segments::DebugParams *dbg_ptr = nullptr;
+        find_segments::DebugParams* dbg_ptr = nullptr;
         if (has_debug) {
             dbg.out_dir = debug_dir;
             dbg.dump_ext = ".png";
@@ -58,28 +90,22 @@ int main(int argc, char **argv) {
             dbg_ptr = &dbg;
         }
 
-        const std::vector<find_segments::SegmentPixels> segs = find_segments::find_segments(input, params, dbg_ptr);
+        const auto segments = find_segments::find_segments(input, sp, dbg_ptr);
 
-        find_segments::VisualizeParams vis;
-        vis.min_pixels = 2;
-        vis.min_median_magnitude = 0.0f;
-        vis.max_median_angle_deviation_deg = 180.0f;
-        vis.seed = 123;
+        const auto seg_overlay = find_segments::visualize_segments_overlay(input, segments, {});
+        libimages::debug_io::dump_image((out_dir / "02_segments_overlay.png").string(), seg_overlay, true, true);
 
-        const image8u overlay = find_segments::visualize_segments_overlay(input, segs, vis);
-        libimages::debug_io::dump_image((out_dir / "02_segments_overlay.png").string(), overlay, /*verbose=*/true,
-                                        /*force=*/true);
+        // ---- NEW: find_lines stage ----
+        find_lines::Params lp; // defaults
+        const auto lines = find_lines::find_lines(segments, lp);
 
-        // Large-only overlay for convenience.
-        find_segments::VisualizeParams vis_large = vis;
-        vis_large.min_pixels = 100;
-        const image8u overlay_large = find_segments::visualize_segments_overlay(input, segs, vis_large);
-        libimages::debug_io::dump_image((out_dir / "03_segments_overlay_large.png").string(), overlay_large,
-                                        /*verbose=*/true, /*force=*/true);
+        const auto lines_overlay = find_lines::visualize_lines_overlay(input, lines, {});
+        libimages::debug_io::dump_image((out_dir / "03_lines_overlay.png").string(), lines_overlay, true, true);
 
-        std::cout << "Segments: " << segs.size() << "\n";
+        std::cout << "segments: " << segments.size() << "\n";
+        std::cout << "lines:    " << lines.size() << "\n";
         return 0;
-    } catch (const std::exception &e) {
+    } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         return 2;
     }

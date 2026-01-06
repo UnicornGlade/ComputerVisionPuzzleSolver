@@ -1,10 +1,12 @@
 add_library(libapp STATIC
+        algorithms/find_lines.cpp
         algorithms/find_segments.cpp
 )
 target_link_libraries(libapp PUBLIC libimages)
 
 if (BUILD_TESTING)
     add_executable(libapp_tests
+            algorithms/find_lines_test.cpp
             algorithms/find_segments_test.cpp
     )
     target_link_libraries(libapp_tests PRIVATE libapp GTest::gtest_main)
