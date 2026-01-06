@@ -11,6 +11,7 @@ if (BUILD_TESTING)
     add_executable(libbase_tests
             libbase/algorithms/disjoint_set_tests.cpp
             libbase/algorithms/priority_queue_tests.cpp
+            libbase/fast_random_tests.cpp
             libbase/stats_tests.cpp
     )
 
