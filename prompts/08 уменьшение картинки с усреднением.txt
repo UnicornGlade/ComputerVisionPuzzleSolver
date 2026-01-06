@@ -1,0 +1,5 @@
+image8u downscale_interpolation(const image8u &img, float downscale_ratio) {
+     // TODO
+}
+
+сделай так чтобы эта функция при сильных уменьшениях размера (например в пять раз) усредняла цвета покрытые большим (уменьшенным) пикселем
