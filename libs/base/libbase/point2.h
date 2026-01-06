@@ -4,8 +4,6 @@
 #include <iosfwd>
 #include <string>
 
-namespace libbase {
-
 template <typename T> struct point2 final {
     T x{};
     T y{};
@@ -65,5 +63,3 @@ extern template struct point2<float>;
 extern template struct point2<int>;
 extern template std::ostream& operator<<(std::ostream& os, const point2<float>& p);
 extern template std::ostream& operator<<(std::ostream& os, const point2<int>& p);
-
-} // namespace libbase

@@ -7,9 +7,6 @@
 
 #include "point2.h"
 
-using libbase::point2f;
-using libbase::point2i;
-
 TEST(point2, AddSubInt) {
   const point2i a(1, 2);
   const point2i b(10, -5);

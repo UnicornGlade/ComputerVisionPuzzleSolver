@@ -11,7 +11,7 @@
 namespace find_segments {
 
 struct SegmentPixels {
-    std::vector<libbase::point2i> pixels;
+    std::vector<point2i> pixels;
 
     float median_magnitude = 0.0f;
     float median_abs_dev_magnitude = 0.0f;

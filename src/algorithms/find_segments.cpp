@@ -30,7 +30,6 @@ namespace find_segments {
 
 namespace {
 
-using libbase::point2i;
 using libimages::image32f;
 using libimages::image32i;
 using libimages::image8u;

@@ -8,8 +8,6 @@
 
 #include <libbase/runtime_assert.h>
 
-namespace libbase {
-
 template <typename T> point2<T>::point2(T x_, T y_) : x(x_), y(y_) {}
 
 template <typename T> T& point2<T>::operator[](std::size_t idx) {
@@ -123,5 +121,3 @@ template struct point2<float>;
 template struct point2<int>;
 template std::ostream& operator<<(std::ostream& os, const point2<float>& p);
 template std::ostream& operator<<(std::ostream& os, const point2<int>& p);
-
-} // namespace libbase
