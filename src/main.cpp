@@ -7,6 +7,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <libimages/algorithms/downscale.h>
@@ -17,6 +18,7 @@
 #include <libimages/image.h>
 #include <libimages/image_io.h>
 
+#include <libbase/stats.h>
 #include <libbase/runtime_assert.h>
 #include <libbase/algorithms/disjoint_set.h>
 
@@ -32,7 +34,7 @@ inline constexpr bool kDumpVerbose = true;        // true -> print extra info wh
 inline constexpr bool kDumpForceOverwrite = true; // true -> overwrite existing files.
 
 // Preprocessing.
-inline constexpr float kDownscaleRatio = 32.0f; // 1.0 -> no resize. <1 shrinks. >1 is treated as 1/kDownscaleRatio.
+inline constexpr float kDownscaleRatio = 8.0f; // 1.0 -> no resize. <1 shrinks. >1 is treated as 1/kDownscaleRatio.
 inline constexpr float kGaussianSigma =
     0.01f; // Larger -> more smoothing (less noise, fewer edges). Smaller -> sharper but noisier.
 
@@ -253,6 +255,33 @@ static image32f make_image_magnitude_range(const DisjointSetUnion &dsu, const Co
     return out;
 }
 
+static image32f make_image_magnitude_median(const image32f &mag, const DisjointSetUnion &dsu, const CompStats &s, int w, int h) {
+    image32f out(w, h, 1);
+    out.fill(0.0f);
+
+    std::unordered_map<int, std::vector<float>> magnitudes_by_id;
+    for (int j = 0; j < h; ++j) {
+        for (int i = 0; i < w; ++i) {
+            magnitudes_by_id[dsu.find(j * w + i)].push_back(mag(j, i));
+        }
+    }
+
+    for (int j = 0; j < h; ++j) {
+        for (int i = 0; i < w; ++i) {
+            float set_median = stats::median(magnitudes_by_id[dsu.find(j * w + i)]);
+            out(j, i) = set_median;
+        }
+    }
+
+    std::vector<float> medians;
+    for (auto it: magnitudes_by_id) {
+        medians.push_back(it.second[0]);
+    }
+    std::cerr << "[debug_io] magnitude medians: " << stats::summaryStats(medians) << std::endl;
+
+    return out;
+}
+
 // Hue = component mean direction, Value = 1, background black for singletons.
 static image8u make_image_direction_mean_hsv(const DisjointSetUnion &dsu, const CompStats &s, int w, int h) {
     image8u out(w, h, 3);
@@ -342,9 +371,10 @@ static image8u make_image_direction_mean_hsv(const DisjointSetUnion &dsu, const 
     return out;
 }
 
-static void dump_unionfind_snapshot(const fs::path &out_root, std::size_t unions_done, DisjointSetUnion &dsu,
+static void dump_unionfind_snapshot(const fs::path &out_root, const Gradients & gr,
+                                    std::string subdir, DisjointSetUnion &dsu,
                                     const CompStats &stats, int w, int h) {
-    const fs::path dir = out_root / iters_dir_name(unions_done);
+    const fs::path dir = out_root / subdir;
     fs::create_directories(dir);
 
     // 1) colorized components
@@ -376,6 +406,11 @@ static void dump_unionfind_snapshot(const fs::path &out_root, std::size_t unions
     // 6) magnitude range
     libimages::debug_io::dump_image((dir / ("05_magnitude_range" + std::string(cfg::kDefaultDumpExt))).string(),
                                     make_image_magnitude_range(dsu, stats, w, h), cfg::kDumpVerbose,
+                                    cfg::kDumpForceOverwrite);
+
+    // 7) median magnitude
+    libimages::debug_io::dump_image((dir / ("06_magnitude_median" + std::string(cfg::kDefaultDumpExt))).string(),
+                                    make_image_magnitude_median(gr.mag, dsu, stats, w, h), cfg::kDumpVerbose,
                                     cfg::kDumpForceOverwrite);
 }
 
@@ -428,7 +463,7 @@ int main(int argc, char **argv) {
                                         cfg::kDumpForceOverwrite);
 
         // 01: downscale
-        input = downscale_nearest(input, cfg::kDownscaleRatio);
+        input = downscale_area(input, cfg::kDownscaleRatio);
         libimages::debug_io::dump_image(stage_path(out_dir, 1, "input_downscaled"), input, cfg::kDumpVerbose,
                                         cfg::kDumpForceOverwrite);
 
@@ -534,7 +569,7 @@ int main(int argc, char **argv) {
 
             // Snapshot when reaching scheduled thresholds (after N successful unions).
             while (sched_pos < schedule.size() && unions_done == schedule[sched_pos]) {
-                dump_unionfind_snapshot(out_dir, unions_done, dsu, stats, w, h);
+                dump_unionfind_snapshot(out_dir, gr, iters_dir_name(unions_done), dsu, stats, w, h);
                 ++sched_pos;
             }
 
@@ -544,6 +579,7 @@ int main(int argc, char **argv) {
                 // We keep going to be consistent with clustering.
             }
         }
+        dump_unionfind_snapshot(out_dir, gr, "iters_last", dsu, stats, w, h);
 
         std::cout << "Saved debug images to: " << out_dir.string() << "\n";
         std::cout << "Total successful unions: " << unions_done << "\n";
