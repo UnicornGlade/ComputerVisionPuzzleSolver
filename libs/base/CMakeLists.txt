@@ -16,11 +16,6 @@ if (BUILD_TESTING)
             libbase/point2_tests.cpp
             libbase/stats_tests.cpp
     )
-
-    target_link_libraries(libbase_tests PRIVATE
-            libbase
-            GTest::gtest_main
-    )
-
+    target_link_libraries(libbase_tests PRIVATE libbase GTest::gtest_main)
     add_test(NAME libbase_tests COMMAND libbase_tests)
 endif ()
