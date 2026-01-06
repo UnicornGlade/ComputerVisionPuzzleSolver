@@ -9,7 +9,6 @@
 #include <string>
 #include <vector>
 
-#include <libbase/runtime_assert.h>
 #include <libimages/algorithms/downscale.h>
 #include <libimages/algorithms/gaussian_blur.h>
 #include <libimages/algorithms/grayscale.h>
@@ -18,7 +17,8 @@
 #include <libimages/image.h>
 #include <libimages/image_io.h>
 
-#include "disjoint_set.h"
+#include <libbase/runtime_assert.h>
+#include <libbase/algorithms/disjoint_set.h>
 
 using namespace libimages;
 

@@ -1,12 +1,11 @@
 #pragma once
 
-#include <cstddef>
+#include <source_location>
 #include <utility>
 #include <vector>
-#include <source_location>
 
 class DisjointSetUnion final {
-public:
+  public:
     explicit DisjointSetUnion(std::size_t n);
 
     std::size_t size() const noexcept { return parent_.size(); }
@@ -23,8 +22,7 @@ public:
 
     std::size_t set_size(std::size_t x, std::source_location loc = std::source_location::current()) const;
 
-private:
-
+  private:
     std::vector<std::size_t> parent_;
     std::vector<std::size_t> sz_;
 };
