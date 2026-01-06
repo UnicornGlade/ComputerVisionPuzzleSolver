@@ -25,7 +25,7 @@ using namespace libimages;
 // All tunable parameters live here.
 namespace cfg {
 // Output naming.
-inline constexpr const char *kDefaultDumpExt = ".jpg"; // png is lossless, but jpg is faster
+inline constexpr const char *kDefaultDumpExt = ".png"; // png is lossless, but jpg is faster
 
 // Debug IO behavior.
 inline constexpr bool kDumpVerbose = true;        // true -> print extra info while saving.
