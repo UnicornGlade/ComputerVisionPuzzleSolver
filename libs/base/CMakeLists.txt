@@ -2,6 +2,7 @@ add_library(libbase STATIC
         libbase/algorithms/disjoint_set.cpp
         libbase/algorithms/priority_queue.cpp
         libbase/fast_random.cpp
+        libbase/point2.cpp
         libbase/stats.cpp
 )
 
@@ -12,6 +13,7 @@ if (BUILD_TESTING)
             libbase/algorithms/disjoint_set_tests.cpp
             libbase/algorithms/priority_queue_tests.cpp
             libbase/fast_random_tests.cpp
+            libbase/point2_tests.cpp
             libbase/stats_tests.cpp
     )
 

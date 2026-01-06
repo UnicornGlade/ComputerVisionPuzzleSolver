@@ -1,0 +1,14 @@
+создай простой класс point2 - двумерная точка-вектор она может быть point2f (float, float)
+может быть point2i (int, int) у нее должны быть простые методы вроде
+1) сложить/вычесть с другой точкой
+2) умножить/поделить на число (float/int)
+3) скалярное произведение на другую точку-вектор
+4) преобразование в строку при выводе в консоль
+5) доступ к x, y (на чтение и запись) что-то еще забыл?
+если не уверена - уточни прежде чем писать код
+потом напиши point2.h, point2.cpp, point2_tests.cpp
+
+но assertion_error у меня без namespace (без libbase::)
+кроме того ошибка компиляции:
+...\libs\base\libbase\point2_tests.cpp(42): error C2607: static assertion failed
+...\libs\base\libbase\point2_tests.cpp(52): error C2607: static assertion failed
