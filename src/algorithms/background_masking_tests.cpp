@@ -123,4 +123,3 @@ TEST(background_masking, MorphologyClosingFillsHoles) {
 
     EXPECT_GE(count_white(mask_refined), count_white(mask_raw));
 }
-1
