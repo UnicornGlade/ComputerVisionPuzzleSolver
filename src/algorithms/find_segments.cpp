@@ -397,8 +397,8 @@ std::vector<SegmentPixels> find_segments(const image8u& input, const Params& par
         std::cerr << "[find_segments] magnitude threshold: " << magnitude_threshold << std::endl;
     }
 
-    // image8u is_big_enough_mask = libimages::magnitude_threshold_mask(gr, magnitude_threshold);
-    // libimages::apply_mask_inplace(gr, is_big_enough_mask);
+    image8u is_big_enough_mask = libimages::magnitude_threshold_mask(gr, magnitude_threshold);
+    libimages::apply_mask_inplace(gr, is_big_enough_mask);
 
     if (dbg_enabled) {
         libimages::debug_io::dump_image(stage_path(debug->out_dir, dbg_step++, "strong_enough_mask", debug->dump_ext),
