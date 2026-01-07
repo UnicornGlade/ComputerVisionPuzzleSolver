@@ -41,7 +41,7 @@ struct DebugParams {
     bool force_overwrite = true;
 
     // For "large components" debug visualization.
-    int large_component_min_size = 100;
+    int large_component_min_size = 10;
 };
 
 struct VisualizeParams {

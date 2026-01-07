@@ -10,8 +10,8 @@
 #include <libimages/image_io.h>
 #include <libimages/algorithms/downscale.h>
 
-#include "algorithms/find_segments.h"
 #include "algorithms/find_lines.h"
+#include "algorithms/find_segments.h"
 
 namespace fs = std::filesystem;
 
@@ -47,10 +47,6 @@ int main(int argc, char** argv) {
         find_segments::DebugParams* dbg_ptr = nullptr;
         if (has_debug) {
             dbg.out_dir = debug_dir;
-            dbg.dump_ext = ".png";
-            dbg.verbose = true;
-            dbg.force_overwrite = true;
-            dbg.large_component_min_size = 100;
             dbg_ptr = &dbg;
         }
 

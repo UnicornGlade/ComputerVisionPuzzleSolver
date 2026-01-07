@@ -137,4 +137,16 @@ image8u magnitude_threshold_mask(const Gradients& g, float magnitude_threshold) 
     return m;
 }
 
+std::vector<float> extract_non_zero_magnitudes(const Gradients& g) {
+    std::vector<float> non_zero_magnitudes;
+    for (int j = 0; j < g.mag.height(); ++j) {
+        for (int i = 0; i < g.mag.width(); ++i) {
+            if (g.mag(j, i) != 0) {
+                non_zero_magnitudes.push_back(g.mag(j, i));
+            }
+        }
+    }
+    return non_zero_magnitudes;
+}
+
 } // namespace libimages

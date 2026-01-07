@@ -1,11 +1,14 @@
 #include "find_segments.h"
 
+#include "non_maximum_suppression.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <iomanip>
+#include <iostream>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -271,9 +274,9 @@ static image8u make_component_mean_direction_hsv(const DisjointSetUnion& dsu, co
     return libimages::visualize_angle_hsv(angle_deg, mag);
 }
 
-static void dump_unionfind_snapshot(const DebugParams& dbg, std::size_t unions_done,
+static void dump_unionfind_snapshot(const DebugParams& dbg, std::string subdir,
                                     DisjointSetUnion& dsu, const CompStats& stats, int w, int h) {
-    const fs::path dir = dbg.out_dir / iters_dir_name(unions_done);
+    const fs::path dir = dbg.out_dir / subdir;
     fs::create_directories(dir);
 
     libimages::debug_io::dump_image((dir / ("00_component_sizes_log" + dbg.dump_ext)).string(),
@@ -336,42 +339,74 @@ static image8u to_rgb_no_alpha(const image8u& img) {
 std::vector<SegmentPixels> find_segments(const image8u& input, const Params& params, const DebugParams* debug) {
     rassert(input.width() > 0 && input.height() > 0, "Empty input image");
 
+    int dbg_step = 0;
     const bool dbg_enabled = (debug != nullptr);
     if (dbg_enabled) fs::create_directories(debug->out_dir);
 
     if (dbg_enabled) {
-        libimages::debug_io::dump_image(stage_path(debug->out_dir, 0, "input", debug->dump_ext),
+        libimages::debug_io::dump_image(stage_path(debug->out_dir, dbg_step++, "input", debug->dump_ext),
                                         input, debug->verbose, debug->force_overwrite);
     }
 
     // 01: grayscale (use library)
     const image32f gray = libimages::to_grayscale_float(input);
     if (dbg_enabled) {
-        libimages::debug_io::dump_image(stage_path(debug->out_dir, 1, "gray", debug->dump_ext),
+        libimages::debug_io::dump_image(stage_path(debug->out_dir, dbg_step++, "gray", debug->dump_ext),
                                         gray, debug->verbose, debug->force_overwrite);
     }
 
     // 02: blur (use library)
     const image32f blurred = libimages::gaussian_blur_gray(gray, params.gaussian_sigma);
     if (dbg_enabled) {
-        libimages::debug_io::dump_image(stage_path(debug->out_dir, 2, "gray_blurred", debug->dump_ext),
+        libimages::debug_io::dump_image(stage_path(debug->out_dir, dbg_step++, "gray_blurred", debug->dump_ext),
                                         blurred, debug->verbose, debug->force_overwrite);
     }
 
     // 03..: gradients (use library)
-    const libimages::Gradients gr = libimages::sobel_gradients(blurred);
+    libimages::Gradients gr = libimages::sobel_gradients(blurred);
     const int w = gr.mag.width();
     const int h = gr.mag.height();
 
     if (dbg_enabled) {
-        libimages::debug_io::dump_image(stage_path(debug->out_dir, 3, "sobel_dx_signed", debug->dump_ext),
+        libimages::debug_io::dump_image(stage_path(debug->out_dir, dbg_step++, "sobel_dx_signed", debug->dump_ext),
                                         libimages::visualize_signed_to_u8(gr.dx), debug->verbose, debug->force_overwrite);
-        libimages::debug_io::dump_image(stage_path(debug->out_dir, 4, "sobel_dy_signed", debug->dump_ext),
+        libimages::debug_io::dump_image(stage_path(debug->out_dir, dbg_step++, "sobel_dy_signed", debug->dump_ext),
                                         libimages::visualize_signed_to_u8(gr.dy), debug->verbose, debug->force_overwrite);
-        libimages::debug_io::dump_image(stage_path(debug->out_dir, 5, "sobel_mag", debug->dump_ext),
+        libimages::debug_io::dump_image(stage_path(debug->out_dir, dbg_step++, "sobel_mag", debug->dump_ext),
                                         gr.mag, debug->verbose, debug->force_overwrite);
-        libimages::debug_io::dump_image(stage_path(debug->out_dir, 6, "sobel_angle_hsv", debug->dump_ext),
-                                        libimages::visualize_angle_hsv(gr.angle, gr.mag), debug->verbose, debug->force_overwrite);
+        libimages::debug_io::dump_image(stage_path(debug->out_dir, dbg_step++, "sobel_angle_hsv", debug->dump_ext),
+        libimages::visualize_angle_hsv(gr.angle, gr.mag), debug->verbose, debug->force_overwrite);
+    }
+
+    image8u is_extremum_mask = non_maximum_suppression(gr);
+    libimages::apply_mask_inplace(gr, is_extremum_mask);
+
+    if (dbg_enabled) {
+        libimages::debug_io::dump_image(stage_path(debug->out_dir, dbg_step++, "extremum_mask", debug->dump_ext),
+                                        is_extremum_mask, debug->verbose, debug->force_overwrite);
+        libimages::debug_io::dump_image(stage_path(debug->out_dir, dbg_step++, "extremum_sobel_mag", debug->dump_ext),
+            gr.mag, debug->verbose, debug->force_overwrite);
+        libimages::debug_io::dump_image(stage_path(debug->out_dir, dbg_step++, "extremum_sobel_angle_hsv", debug->dump_ext),
+        libimages::visualize_angle_hsv(gr.angle, gr.mag), debug->verbose, debug->force_overwrite);
+    }
+
+    std::vector<float> non_zero_gradients_magnitudes = extract_non_zero_magnitudes(gr);
+    float magnitude_threshold = stats::percentile(non_zero_gradients_magnitudes, 90) / 2.0f; // threshold = half of the 90% percentile
+    if (dbg_enabled) {
+        std::cerr << "[find_segments] non zero gradients magnitudes (after NMS) " << stats::summaryStats(non_zero_gradients_magnitudes) << std::endl;
+        std::cerr << "[find_segments] magnitude threshold: " << magnitude_threshold << std::endl;
+    }
+
+    // image8u is_big_enough_mask = libimages::magnitude_threshold_mask(gr, magnitude_threshold);
+    // libimages::apply_mask_inplace(gr, is_big_enough_mask);
+
+    if (dbg_enabled) {
+        libimages::debug_io::dump_image(stage_path(debug->out_dir, dbg_step++, "strong_enough_mask", debug->dump_ext),
+                                        is_extremum_mask, debug->verbose, debug->force_overwrite);
+        libimages::debug_io::dump_image(stage_path(debug->out_dir, dbg_step++, "strong_sobel_mag", debug->dump_ext),
+            gr.mag, debug->verbose, debug->force_overwrite);
+        libimages::debug_io::dump_image(stage_path(debug->out_dir, dbg_step++, "strong_sobel_angle_hsv", debug->dump_ext),
+        libimages::visualize_angle_hsv(gr.angle, gr.mag), debug->verbose, debug->force_overwrite);
     }
 
     const std::size_t n = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
@@ -405,6 +440,11 @@ std::vector<SegmentPixels> find_segments(const image8u& input, const Params& par
             std::vector<std::pair<int, int>> neighbors = {{i + 1, j}, {i, j + 1}, {i + 1, j + 1}, {i - 1, j + 1}};
             for (auto [ni, nj]: neighbors) {
                 if (ni >= 0 && ni < w && nj >= 0 && nj < h) {
+                    bool is_masked_out = (gr.mag(j, i) == 0) || (gr.mag(nj, ni) == 0);
+                    if (is_masked_out) {
+                        continue;
+                    }
+
                     const std::size_t b = nj * w + ni;
                     float angle_diff = libimages::angle_diff_deg(gr.angle(j, i), gr.angle(nj, ni));
                     edges.push_back(Edge{a, b, angle_diff});
@@ -434,9 +474,12 @@ std::vector<SegmentPixels> find_segments(const image8u& input, const Params& par
         ++unions_done;
 
         while (dbg_enabled && sched_pos < schedule.size() && unions_done == schedule[sched_pos]) {
-            dump_unionfind_snapshot(*debug, unions_done, dsu, stats, w, h);
+            dump_unionfind_snapshot(*debug, iters_dir_name(unions_done), dsu, stats, w, h);
             ++sched_pos;
         }
+    }
+    if (dbg_enabled) {
+        dump_unionfind_snapshot(*debug, "iters_last", dsu, stats, w, h);
     }
 
     // Build final segments
