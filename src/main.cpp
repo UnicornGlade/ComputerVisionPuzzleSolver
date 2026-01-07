@@ -257,7 +257,10 @@ int main(int argc, char** argv) {
             libimages::debug_io::dump_image((dbg_sides / (pre + "border.png")).string(), border, true, true);
 
             // 5.2 split border into K sides
-            const auto sides = find_mask_borders::split_border_into_sides(obj.mask, border, cfg::kBorderSideCount);
+            find_mask_borders::SplitSidesDebugParams sd;
+            sd.out_dir = dbg_sides;
+            sd.prefix = pre + "_";
+            const auto sides = find_mask_borders::split_border_into_sides(obj.mask, border, cfg::kBorderSideCount, &sd);
 
             const image8u sides_overlay =
                 find_mask_borders::visualize_sides_overlay(obj.image, sides, cfg::kVizSeed ^ static_cast<std::uint32_t>(k), 2);
