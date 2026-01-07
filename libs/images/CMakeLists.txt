@@ -2,6 +2,7 @@ add_library(libimages STATIC
         libimages/algorithms/downscale.cpp
         libimages/algorithms/gaussian_blur.cpp
         libimages/algorithms/grayscale.cpp
+        libimages/algorithms/morphology.cpp
         libimages/algorithms/sobel_gradients.cpp
         libimages/debug_io.cpp
         libimages/draw.cpp
@@ -14,6 +15,7 @@ target_link_libraries(libimages PUBLIC libbase PRIVATE third_party_stb)
 
 if (BUILD_TESTING)
     add_executable(libimages_tests
+            libimages/algorithms/morphology_tests.cpp
             libimages/draw_tests.cpp
     )
     target_link_libraries(libimages_tests PRIVATE libimages GTest::gtest_main)
