@@ -1,5 +1,6 @@
 add_library(libbase STATIC
         libbase/algorithms/disjoint_set.cpp
+        libbase/algorithms/kdtree2.cpp
         libbase/algorithms/priority_queue.cpp
         libbase/fast_random.cpp
         libbase/point2.cpp
@@ -11,6 +12,7 @@ target_include_directories(libbase PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 if (BUILD_TESTING)
     add_executable(libbase_tests
             libbase/algorithms/disjoint_set_tests.cpp
+            libbase/algorithms/kdtree2_tests.cpp
             libbase/algorithms/priority_queue_tests.cpp
             libbase/fast_random_tests.cpp
             libbase/point2_tests.cpp
