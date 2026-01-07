@@ -8,6 +8,7 @@
 #include <libimages/debug_io.h>
 #include <libimages/image.h>
 #include <libimages/image_io.h>
+#include <libimages/algorithms/downscale.h>
 
 #include "algorithms/find_segments.h"
 #include "algorithms/find_lines.h"
@@ -19,43 +20,6 @@ inline constexpr float kDownscaleRatio = 8.0f;
 }
 
 using libimages::image8u;
-
-static float normalize_downscale_ratio(float r) {
-    rassert(r > 0.0f, "kDownscaleRatio must be > 0", r);
-    if (r > 1.0f) r = 1.0f / r;
-    rassert(r > 0.0f && r <= 1.0f, "normalized ratio must be in (0,1]", r);
-    return r;
-}
-
-static image8u downscale_nearest(const image8u& img, float downscale_ratio) {
-    const float s = normalize_downscale_ratio(downscale_ratio);
-
-    const int w = img.width();
-    const int h = img.height();
-    const int c = img.channels();
-    rassert(w > 0 && h > 0 && c > 0, "Invalid input image", w, h, c);
-
-    if (std::fabs(s - 1.0f) < 1e-7f) return img;
-
-    const int nw = std::max(1, static_cast<int>(std::lround(static_cast<float>(w) * s)));
-    const int nh = std::max(1, static_cast<int>(std::lround(static_cast<float>(h) * s)));
-
-    image8u out(nw, nh, c);
-
-    const float inv_s = 1.0f / s;
-    for (int j = 0; j < nh; ++j) {
-        const int sj = std::clamp(static_cast<int>(std::floor((static_cast<float>(j) + 0.5f) * inv_s)), 0, h - 1);
-        for (int i = 0; i < nw; ++i) {
-            const int si = std::clamp(static_cast<int>(std::floor((static_cast<float>(i) + 0.5f) * inv_s)), 0, w - 1);
-            if (c == 1) {
-                out(j, i) = img(sj, si);
-            } else {
-                for (int k = 0; k < c; ++k) out(j, i, k) = img(sj, si, k);
-            }
-        }
-    }
-    return out;
-}
 
 int main(int argc, char** argv) {
     try {
@@ -75,7 +39,7 @@ int main(int argc, char** argv) {
         image8u input = libimages::load_image(input_path.string());
         libimages::debug_io::dump_image((out_dir / "00_input.png").string(), input, true, true);
 
-        input = downscale_nearest(input, cfg::kDownscaleRatio);
+        input = libimages::downscale_area(input, cfg::kDownscaleRatio);
         libimages::debug_io::dump_image((out_dir / "01_input_downscaled.png").string(), input, true, true);
 
         find_segments::Params sp; // defaults
