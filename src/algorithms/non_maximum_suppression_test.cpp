@@ -64,7 +64,7 @@ TEST(non_maximum_suppression, HorizontalDirectionKeepsStrictMax) {
     libimages::debug_io::dump_image((dir / "01_mask.png").string(), mask_to_u8_vis(m), true, true);
 }
 
-TEST(non_maximum_suppression, EqualNeighborSuppresses) {
+TEST(non_maximum_suppression, EqualNeighborNotSuppresses) {
     const fs::path dir = "debug-unit-tests/non_maximum_suppression/case01_equal";
     fs::create_directories(dir);
 
@@ -81,7 +81,11 @@ TEST(non_maximum_suppression, EqualNeighborSuppresses) {
     g.mag(3, 4) = 10.0f;
 
     const image8u m = libimages::non_maximum_suppression(g);
-    EXPECT_EQ(m(3, 3), 0);
+    EXPECT_EQ(m(3, 1), 0);
+    EXPECT_EQ(m(3, 2), 0);
+    EXPECT_EQ(m(3, 3), 255);
+    EXPECT_EQ(m(3, 4), 255);
+    EXPECT_EQ(m(3, 5), 0);
 
     libimages::debug_io::dump_image((dir / "00_mag.png").string(), g.mag, true, true);
     libimages::debug_io::dump_image((dir / "01_mask.png").string(), mask_to_u8_vis(m), true, true);
