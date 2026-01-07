@@ -397,29 +397,18 @@ std::vector<SegmentPixels> find_segments(const image8u& input, const Params& par
 
     // Build 8-connected edges
     std::vector<Edge> edges;
-    edges.reserve(static_cast<std::size_t>((w > 1 ? (w - 1) : 0) * h) +
-                  static_cast<std::size_t>(w * (h > 1 ? (h - 1) : 0)) +
-                  static_cast<std::size_t>(2 * (w > 1 ? (w - 1) : 0) * (h > 1 ? (h - 1) : 0)));
 
     for (int j = 0; j < h; ++j) {
         for (int i = 0; i < w; ++i) {
             const std::size_t a = static_cast<std::size_t>(j) * static_cast<std::size_t>(w) + static_cast<std::size_t>(i);
 
-            if (i + 1 < w) {
-                const std::size_t b = static_cast<std::size_t>(j) * static_cast<std::size_t>(w) + static_cast<std::size_t>(i + 1);
-                edges.push_back(Edge{a, b, libimages::angle_diff_deg(gr.angle(j, i), gr.angle(j, i + 1))});
-            }
-            if (j + 1 < h) {
-                const std::size_t b = static_cast<std::size_t>(j + 1) * static_cast<std::size_t>(w) + static_cast<std::size_t>(i);
-                edges.push_back(Edge{a, b, libimages::angle_diff_deg(gr.angle(j, i), gr.angle(j + 1, i))});
-            }
-            if (i + 1 < w && j + 1 < h) {
-                const std::size_t b = static_cast<std::size_t>(j + 1) * static_cast<std::size_t>(w) + static_cast<std::size_t>(i + 1);
-                edges.push_back(Edge{a, b, libimages::angle_diff_deg(gr.angle(j, i), gr.angle(j + 1, i + 1))});
-            }
-            if (i - 1 >= 0 && j + 1 < h) {
-                const std::size_t b = static_cast<std::size_t>(j + 1) * static_cast<std::size_t>(w) + static_cast<std::size_t>(i - 1);
-                edges.push_back(Edge{a, b, libimages::angle_diff_deg(gr.angle(j, i), gr.angle(j + 1, i - 1))});
+            std::vector<std::pair<int, int>> neighbors = {{i + 1, j}, {i, j + 1}, {i + 1, j + 1}, {i - 1, j + 1}};
+            for (auto [ni, nj]: neighbors) {
+                if (ni >= 0 && ni < w && nj >= 0 && nj < h) {
+                    const std::size_t b = nj * w + ni;
+                    float angle_diff = libimages::angle_diff_deg(gr.angle(j, i), gr.angle(nj, ni));
+                    edges.push_back(Edge{a, b, angle_diff});
+                }
             }
         }
     }
