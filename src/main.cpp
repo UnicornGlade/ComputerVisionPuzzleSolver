@@ -10,7 +10,6 @@
 #include <libimages/image_io.h>
 #include <libimages/algorithms/downscale.h>
 
-#include "algorithms/find_lines.h"
 #include "algorithms/find_segments.h"
 
 namespace fs = std::filesystem;
