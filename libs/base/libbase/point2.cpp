@@ -87,6 +87,12 @@ template <typename T> T point2<T>::norm2() const { return dot(*this); }
 
 template <typename T> double point2<T>::length() const { return std::sqrt(static_cast<double>(norm2())); }
 
+template <typename T> point2<float> point2<T>::normalized() const {
+    double len = length();
+    rassert(len > 0, 325412341231, len);
+    return point2f(x, y) / len;
+}
+
 template <typename T> std::string point2<T>::to_string() const {
   std::ostringstream ss;
   ss << "(" << x << ", " << y << ")";

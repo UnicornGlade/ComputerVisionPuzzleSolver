@@ -34,6 +34,7 @@ template <typename T> struct point2 final {
     // Norm / length
     T norm2() const;
     double length() const;
+    point2<float> normalized() const;
 
     // String conversion
     std::string to_string() const;
