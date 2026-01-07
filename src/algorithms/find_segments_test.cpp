@@ -52,7 +52,9 @@ static void run_case(const fs::path& root, const std::string& name, const image8
     // Allow smaller segments for synthetic patterns.
     p.min_segment_pixels = 10;
 
-    const auto segs = find_segments::find_segments(img, p, /*debug=*/nullptr);
+    find_segments::DebugParams debug;
+    debug.out_dir = dir / "debug";
+    const auto segs = find_segments::find_segments(img, p, &debug);
     ASSERT_FALSE(segs.empty()) << "Expected at least one segment in " << name;
 
     const auto overlay = find_segments::visualize_segments_overlay(img, segs, {});

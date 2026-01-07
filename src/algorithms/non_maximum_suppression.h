@@ -7,7 +7,7 @@ namespace libimages {
 
 // Returns 1-channel mask:
 // 255 if pixel is a local maximum of gradient magnitude along the gradient direction,
-// 0 otherwise (if magnitude is <= at least one of the two selected neighbors).
+// 0 otherwise (if magnitude is < at least one of the two selected neighbors).
 image8u non_maximum_suppression(const Gradients& g);
 
 // Zeroes gradients at pixels where is_ok == 0.

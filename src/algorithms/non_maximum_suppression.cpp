@@ -91,8 +91,8 @@ image8u non_maximum_suppression(const Gradients& g) {
             const float m_neg = g.mag(j + dj_neg, i + di_neg);
 
             // Strict local maximum requirement:
-            // If equal or less than any neighbor -> 0.
-            mask(j, i) = (m0 > m_pos && m0 > m_neg) ? static_cast<std::uint8_t>(255) : static_cast<std::uint8_t>(0);
+            // If less than any neighbor -> 0.
+            mask(j, i) = (m0 >= m_pos && m0 >= m_neg) ? static_cast<std::uint8_t>(255) : static_cast<std::uint8_t>(0);
         }
     }
 
