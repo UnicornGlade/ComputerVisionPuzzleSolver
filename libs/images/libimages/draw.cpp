@@ -187,14 +187,14 @@ void draw_nn_connections_red_inplace(image8u& rgb_overlay,
     for (std::size_t i = 0; i < segments.size(); ++i) {
         const int j = nn_B_to_A[i];
         if (j < 0) continue;
-        draw_line_bresenham(rgb_overlay, segments[i].first, segments[j].second, red, thickness);
+        draw_line_bresenham(rgb_overlay, segments[i].second, segments[j].first, red, thickness);
     }
 
     // A -> nearest B
     for (std::size_t i = 0; i < segments.size(); ++i) {
         const int j = nn_A_to_B[i];
         if (j < 0) continue;
-        draw_line_bresenham(rgb_overlay, segments[i].second, segments[j].first, red, thickness);
+        draw_line_bresenham(rgb_overlay, segments[i].first, segments[j].second, red, thickness);
     }
 }
 
