@@ -18,6 +18,7 @@
 
 #include "algorithms/background_masking.h"
 #include "algorithms/utils.h"
+#include "algorithms/find_mask_borders.h"
 
 namespace fs = std::filesystem;
 
@@ -27,14 +28,19 @@ namespace cfg {
 inline constexpr float kDownscaleRatio = 8.0f;
 
 // 2) Blur
-inline constexpr float kGaussianSigma = 1.2f; // bigger -> stronger smoothing (less noise, less details)
+inline constexpr float kGaussianSigma = 1.2f;
 
-// 3) Mask refinement (can be set to 0 to disable)
-inline constexpr int kMaskDilateStrength = 2; // bigger -> fills gaps more
-inline constexpr int kMaskErodeStrength = 2;  // bigger -> removes thin parts more (after dilation: closing)
+// 3) Mask refinement
+inline constexpr int kMaskDilateStrength = 2;
+inline constexpr int kMaskErodeStrength = 2;
 
 // 4) Extract objects
 inline constexpr bool kObjectsEightConnected = true;
+
+// 5) Border/sides/sampling
+inline constexpr int kBorderMinBgNeighbors = 2; // >=2 background neighbors => border pixel
+inline constexpr int kBorderSideCount = 4;      // K
+inline constexpr int kSamplesPerSide = 10;      // L
 
 // High-level outputs
 inline constexpr const char* kOut00 = "00_input_downscaled.png";
@@ -47,8 +53,9 @@ inline constexpr const char* kDbg01 = "01_load_downscale";
 inline constexpr const char* kDbg02 = "02_blur";
 inline constexpr const char* kDbg03 = "03_background_mask";
 inline constexpr const char* kDbg04 = "04_extract_objects";
+inline constexpr const char* kDbg05 = "05_find_mask_borders";
 
-// Low-level file names (inside stage folders)
+// Low-level file names
 inline constexpr const char* kLL00 = "00_input_downscaled.png";
 inline constexpr const char* kLL10 = "10_gray_u8.png";
 inline constexpr const char* kLL20 = "20_blur_gray_u8.png";
@@ -140,10 +147,12 @@ int main(int argc, char** argv) {
         const fs::path dbg2 = debug_root / cfg::kDbg02;
         const fs::path dbg3 = debug_root / cfg::kDbg03;
         const fs::path dbg4 = debug_root / cfg::kDbg04;
+        const fs::path dbg5 = debug_root / cfg::kDbg05;
         fs::create_directories(dbg1);
         fs::create_directories(dbg2);
         fs::create_directories(dbg3);
         fs::create_directories(dbg4);
+        fs::create_directories(dbg5);
 
         // =========================================================
         // 1) Read input image and downscale
@@ -174,20 +183,17 @@ int main(int argc, char** argv) {
         mp.dilate_strength = cfg::kMaskDilateStrength;
         mp.erode_strength = cfg::kMaskErodeStrength;
 
-        // Low-level: show threshold + raw mask (before morphology)
         const float thr = background_masking::estimate_background_threshold(blur_u8);
         const image8u mask_raw = make_raw_threshold_mask(blur_u8, thr);
         libimages::debug_io::dump_image((dbg3 / cfg::kLL30).string(), mask_raw, true, true);
 
-        // Final (with morphology refinement)
         const image8u mask = background_masking::build_foreground_mask(blur_u8, mp);
 
         libimages::debug_io::dump_image((out_dir / cfg::kOut02).string(), mask, true, true);
         libimages::debug_io::dump_image((dbg3 / cfg::kLL31).string(), mask, true, true);
 
         // =========================================================
-        // 4) Split into connected foreground objects + save each as image+mask
-        //    (flat folder layout: 0000image.png, 0000mask.png, ...)
+        // 4) Split into connected foreground objects + save each as image+mask (flat)
         // =========================================================
         utils::ExtractParams ep;
         ep.eight_connected = cfg::kObjectsEightConnected;
@@ -206,15 +212,12 @@ int main(int argc, char** argv) {
             const auto& obj = objects[k];
             const std::string pre = idx4(k);
 
-            // Output (flat)
             libimages::debug_io::dump_image((out_objs / (pre + "image.png")).string(), obj.image, true, true);
             libimages::debug_io::dump_image((out_objs / (pre + "mask.png")).string(), obj.mask, true, true);
 
-            // Low-level (flat too)
             libimages::debug_io::dump_image((dbg_objs / (pre + "image.png")).string(), obj.image, true, true);
             libimages::debug_io::dump_image((dbg_objs / (pre + "mask.png")).string(), obj.mask, true, true);
 
-            // Overlay: random color for each object, painted in global coordinates
             const std::uint32_t rv = rng.nextU32();
             const std::uint8_t cr = static_cast<std::uint8_t>(rv & 0xFFu);
             const std::uint8_t cg = static_cast<std::uint8_t>((rv >> 8) & 0xFFu);
@@ -231,15 +234,55 @@ int main(int argc, char** argv) {
                     hi_overlay(y, x, 2) = cb;
                 }
             }
-
-            std::cout << "[object] " << pre << " offset=(" << obj.offset.x << "," << obj.offset.y << ") "
-                      << "bbox=[(" << obj.bbox.min.x << "," << obj.bbox.min.y << ")-(" << obj.bbox.max.x << ","
-                      << obj.bbox.max.y << ")] "
-                      << "size=" << obj.image.width() << "x" << obj.image.height() << "\n";
         }
 
         libimages::debug_io::dump_image((out_dir / cfg::kOut03).string(), hi_overlay, true, true);
         libimages::debug_io::dump_image((dbg4 / cfg::kLL40).string(), hi_overlay, true, true);
+
+        // =========================================================
+        // 5) NEW: For each object -> border mask -> K sides -> sample KxL colors
+        // =========================================================
+        const fs::path out_sides = out_dir / "objects_sides";
+        const fs::path dbg_sides = dbg5 / "objects_sides";
+        fs::create_directories(out_sides);
+        fs::create_directories(dbg_sides);
+
+        for (std::size_t k = 0; k < objects.size(); ++k) {
+            const auto& obj = objects[k];
+            const std::string pre = idx4(k);
+
+            // 5.1 border pixels
+            const image8u border = find_mask_borders::border_pixels_mask(obj.mask, cfg::kBorderMinBgNeighbors);
+            libimages::debug_io::dump_image((out_sides / (pre + "border.png")).string(), border, true, true);
+            libimages::debug_io::dump_image((dbg_sides / (pre + "border.png")).string(), border, true, true);
+
+            // 5.2 split border into K sides
+            const auto sides = find_mask_borders::split_border_into_sides(obj.mask, border, cfg::kBorderSideCount);
+
+            const image8u sides_overlay =
+                find_mask_borders::visualize_sides_overlay(obj.image, sides, cfg::kVizSeed ^ static_cast<std::uint32_t>(k), 2);
+
+            libimages::debug_io::dump_image((out_sides / (pre + "sides_overlay.png")).string(), sides_overlay, true, true);
+            libimages::debug_io::dump_image((dbg_sides / (pre + "sides_overlay.png")).string(), sides_overlay, true, true);
+
+            // 5.3 sample colors along each side and dump debug with red sample points + blue donors
+            find_mask_borders::SamplingDebugParams dp;
+            dp.out_dir = dbg_sides;
+            dp.prefix = pre + "_";
+            dp.dump_ext = ".png";
+            dp.force_overwrite = true;
+            dp.verbose = false;
+            dp.point_radius = 1;
+
+            const auto samples = find_mask_borders::sample_sides_colors(obj.image, sides, cfg::kSamplesPerSide, &dp);
+            const image8u kxl = find_mask_borders::make_kxl_image(samples);
+
+            libimages::debug_io::dump_image((out_sides / (pre + "samples_kxl.png")).string(), kxl, true, true);
+            libimages::debug_io::dump_image((dbg_sides / (pre + "samples_kxl.png")).string(), kxl, true, true);
+
+            std::cout << "[obj " << pre << "] sides=" << sides.size()
+                      << " K=" << cfg::kBorderSideCount << " L=" << cfg::kSamplesPerSide << "\n";
+        }
 
         std::cout << "objects: " << objects.size() << "\n";
         return 0;
