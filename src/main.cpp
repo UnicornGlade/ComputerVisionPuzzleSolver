@@ -95,15 +95,7 @@ int main(int argc, char** argv) {
         const auto seg_overlay = find_segments::visualize_segments_overlay(input, segments, {});
         libimages::debug_io::dump_image((out_dir / "02_segments_overlay.png").string(), seg_overlay, true, true);
 
-        // ---- NEW: find_lines stage ----
-        find_lines::Params lp; // defaults
-        const auto lines = find_lines::find_lines(segments, lp);
-
-        const auto lines_overlay = find_lines::visualize_lines_overlay(input, lines, {});
-        libimages::debug_io::dump_image((out_dir / "03_lines_overlay.png").string(), lines_overlay, true, true);
-
         std::cout << "segments: " << segments.size() << "\n";
-        std::cout << "lines:    " << lines.size() << "\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
