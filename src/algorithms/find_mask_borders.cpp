@@ -667,6 +667,105 @@ std::vector<std::vector<point2i>> split_border_into_sides(const libimages::image
     return sides;
 }
 
+struct ColorF final {
+    float r = 0.0f;
+    float g = 0.0f;
+    float b = 0.0f;
+};
+
+static std::vector<float> gaussian_kernel_1d(float sigma, int& radius_out) {
+    if (sigma <= 0.0f) {
+        radius_out = 0;
+        return {1.0f};
+    }
+
+    const int radius = std::max(1, static_cast<int>(std::ceil(3.0f * sigma)));
+    radius_out = radius;
+    const int size = 2 * radius + 1;
+
+    std::vector<float> k(static_cast<std::size_t>(size));
+    const float inv2s2 = 1.0f / (2.0f * sigma * sigma);
+
+    float sum = 0.0f;
+    for (int i = -radius; i <= radius; ++i) {
+        const float w = std::exp(-static_cast<float>(i * i) * inv2s2);
+        k[static_cast<std::size_t>(i + radius)] = w;
+        sum += w;
+    }
+    if (sum > 0.0f) {
+        for (auto& v : k) v /= sum;
+    }
+    return k;
+}
+
+static std::vector<ColorF> gaussian_blur_1d_colors(const std::vector<ColorF>& in, float sigma) {
+    if (in.empty()) return {};
+    if (sigma <= 0.0f) return in;
+
+    int R = 0;
+    const auto k = gaussian_kernel_1d(sigma, R);
+
+    std::vector<ColorF> out(in.size());
+    const int n = static_cast<int>(in.size());
+
+    for (int i = 0; i < n; ++i) {
+        float rr = 0.0f, gg = 0.0f, bb = 0.0f;
+        for (int t = -R; t <= R; ++t) {
+            const int j = std::clamp(i + t, 0, n - 1);
+            const float w = k[static_cast<std::size_t>(t + R)];
+            rr += w * in[static_cast<std::size_t>(j)].r;
+            gg += w * in[static_cast<std::size_t>(j)].g;
+            bb += w * in[static_cast<std::size_t>(j)].b;
+        }
+        out[static_cast<std::size_t>(i)] = ColorF{rr, gg, bb};
+    }
+    return out;
+}
+
+static point3u to_u8(ColorF c) {
+    auto conv = [](float v) -> std::uint8_t {
+        if (!std::isfinite(v)) v = 0.0f;
+        int iv = static_cast<int>(std::lround(v));
+        iv = std::clamp(iv, 0, 255);
+        return static_cast<std::uint8_t>(iv);
+    };
+    return point3u{conv(c.r), conv(c.g), conv(c.b)};
+}
+
+// Linear resample from M to L (L>=1).
+static std::vector<point3u> resample_to_L_u8(const std::vector<ColorF>& in, int L) {
+    rassert(L >= 1, "resample_to_L_u8: L must be >= 1", L);
+    std::vector<point3u> out;
+    out.reserve(static_cast<std::size_t>(L));
+
+    const int M = static_cast<int>(in.size());
+    if (M == 0) return out;
+
+    if (L == 1) {
+        out.push_back(to_u8(in[static_cast<std::size_t>((M - 1) / 2)]));
+        return out;
+    }
+
+    for (int k = 0; k < L; ++k) {
+        const double u = static_cast<double>(k) * static_cast<double>(M - 1) / static_cast<double>(L - 1);
+        const int i0 = static_cast<int>(std::floor(u));
+        const int i1 = std::min(i0 + 1, M - 1);
+        const double w = u - static_cast<double>(i0);
+
+        const auto& c0 = in[static_cast<std::size_t>(i0)];
+        const auto& c1 = in[static_cast<std::size_t>(i1)];
+
+        const float rr = static_cast<float>((1.0 - w) * c0.r + w * c1.r);
+        const float gg = static_cast<float>((1.0 - w) * c0.g + w * c1.g);
+        const float bb = static_cast<float>((1.0 - w) * c0.b + w * c1.b);
+
+        out.push_back(to_u8(ColorF{rr, gg, bb}));
+    }
+
+    return out;
+}
+
+
 std::vector<std::vector<point3u>> sample_sides_colors(const libimages::image8u& image_rgb_or_gray,
                                                       const std::vector<std::vector<point2i>>& sides_clockwise,
                                                       int samples_per_side,
@@ -677,6 +776,7 @@ std::vector<std::vector<point3u>> sample_sides_colors(const libimages::image8u& 
 
     const int w = image_rgb_or_gray.width();
     const int h = image_rgb_or_gray.height();
+    (void)w; (void)h;
 
     std::vector<std::vector<point3u>> out;
     out.reserve(sides_clockwise.size());
@@ -684,24 +784,30 @@ std::vector<std::vector<point3u>> sample_sides_colors(const libimages::image8u& 
     const bool do_dbg = (dbg != nullptr) && !dbg->out_dir.empty();
     if (do_dbg) std::filesystem::create_directories(dbg->out_dir);
 
-    // Combined debug overlay (all sides)
     libimages::image8u dbg_all;
     if (do_dbg) dbg_all = to_rgb_darken(image_rgb_or_gray, 2);
 
+    // Hyperparams (internal for now).
+    constexpr int kOversampleFactor = 4;     // M = 4*N
+    constexpr float kSigmaFactor = 0.5f;    // sigma ~= 0.5 * (M/L)
+
     for (std::size_t si = 0; si < sides_clockwise.size(); ++si) {
         const auto& side = sides_clockwise[si];
-        std::vector<point3u> colors;
-        colors.reserve(static_cast<std::size_t>(samples_per_side));
+        const int L = samples_per_side;
+        const int N = static_cast<int>(side.size());
+        const int M = std::max(1, kOversampleFactor * std::max(1, N));
+
+        std::vector<point3u> colors_L;
+        colors_L.reserve(static_cast<std::size_t>(L));
 
         if (side.empty()) {
-            out.push_back(colors);
+            out.push_back(colors_L);
             continue;
         }
         if (side.size() == 1) {
-            // Degenerate side: sample same pixel.
             const point3u c = get_rgb(image_rgb_or_gray, side[0]);
-            for (int k = 0; k < samples_per_side; ++k) colors.push_back(c);
-            out.push_back(colors);
+            for (int k = 0; k < L; ++k) colors_L.push_back(c);
+            out.push_back(std::move(colors_L));
             continue;
         }
 
@@ -714,11 +820,11 @@ std::vector<std::vector<point3u>> sample_sides_colors(const libimages::image8u& 
         const double ux = (len > 1e-9) ? (vx / len) : 1.0;
         const double uy = (len > 1e-9) ? (vy / len) : 0.0;
 
-        // Prepare donors sorted by projection s along line.
         struct Donor {
             double s;
             point2i p;
         };
+
         std::vector<Donor> donors;
         donors.reserve(side.size());
         for (const auto& p : side) {
@@ -729,17 +835,20 @@ std::vector<std::vector<point3u>> sample_sides_colors(const libimages::image8u& 
         }
         std::sort(donors.begin(), donors.end(), [](const Donor& d1, const Donor& d2) { return d1.s < d2.s; });
 
-        // Per-side debug overlay
         libimages::image8u dbg_side;
         if (do_dbg) {
             dbg_side = to_rgb_darken(image_rgb_or_gray, 2);
-            // draw side chord in light gray
             draw_line_rgb(dbg_side, a, b, point3u{200, 200, 200}, 0);
         }
 
-        // Sample points along [a,b]
-        for (int k = 0; k < samples_per_side; ++k) {
-            const double t = (samples_per_side == 1) ? 0.5 : (static_cast<double>(k) / static_cast<double>(samples_per_side - 1));
+        // 1) Dense sampling (M = 4*N).
+        std::vector<ColorF> dense;
+        dense.reserve(static_cast<std::size_t>(M));
+
+        const int dbg_stride = do_dbg ? std::max(1, M / 60) : 1;
+
+        for (int k = 0; k < M; ++k) {
+            const double t = (M == 1) ? 0.5 : (static_cast<double>(k) / static_cast<double>(M - 1));
             const double qx = static_cast<double>(a.x) + t * vx;
             const double qy = static_cast<double>(a.y) + t * vy;
             const double s_q = t * len;
@@ -767,20 +876,16 @@ std::vector<std::vector<point3u>> sample_sides_colors(const libimages::image8u& 
             const point3u c0 = get_rgb(image_rgb_or_gray, d0.p);
             const point3u c1 = get_rgb(image_rgb_or_gray, d1.p);
 
-            auto lerp_u8 = [&](std::uint8_t a0, std::uint8_t a1) -> std::uint8_t {
-                const double v = (1.0 - w01) * static_cast<double>(a0) + w01 * static_cast<double>(a1);
-                const int iv = static_cast<int>(std::lround(v));
-                return static_cast<std::uint8_t>(std::clamp(iv, 0, 255));
-            };
+            const float rr = static_cast<float>((1.0 - w01) * c0.r + w01 * c1.r);
+            const float gg = static_cast<float>((1.0 - w01) * c0.g + w01 * c1.g);
+            const float bb = static_cast<float>((1.0 - w01) * c0.b + w01 * c1.b);
 
-            colors.push_back(point3u{lerp_u8(c0.r, c1.r), lerp_u8(c0.g, c1.g), lerp_u8(c0.b, c1.b)});
+            dense.push_back(ColorF{rr, gg, bb});
 
-            if (do_dbg) {
-                // donors: blue
+            if (do_dbg && (k % dbg_stride == 0)) {
                 put_point_rgb(dbg_side, d0.p.x, d0.p.y, point3u{0, 0, 255}, dbg->point_radius);
                 put_point_rgb(dbg_side, d1.p.x, d1.p.y, point3u{0, 0, 255}, dbg->point_radius);
 
-                // sample: red (rounded to nearest pixel for visualization)
                 const int sx = static_cast<int>(std::lround(qx));
                 const int sy = static_cast<int>(std::lround(qy));
                 put_point_rgb(dbg_side, sx, sy, point3u{255, 0, 0}, dbg->point_radius);
@@ -791,13 +896,42 @@ std::vector<std::vector<point3u>> sample_sides_colors(const libimages::image8u& 
             }
         }
 
+        // 2) 1D Gaussian blur of dense samples before downsampling to L.
+        float sigma = 0.0f;
+        if (L >= 2) {
+            const float decim = static_cast<float>(M - 1) / static_cast<float>(L - 1);
+            sigma = kSigmaFactor * decim; // ~ 0.5 * (M/L)
+            sigma = std::clamp(sigma, 0.6f, 12.0f);
+        }
+
+        const auto dense_blur = gaussian_blur_1d_colors(dense, sigma);
+
+        // 3) Resample to exactly L.
+        colors_L = resample_to_L_u8(dense_blur, L);
+
+        // Debug: also draw final L sample positions (yellow) so it's obvious what becomes the descriptor.
+        if (do_dbg) {
+            const int stepL = std::max(1, L / 40);
+            for (int k = 0; k < L; k += stepL) {
+                const double t = (L == 1) ? 0.5 : (static_cast<double>(k) / static_cast<double>(L - 1));
+                const double qx = static_cast<double>(a.x) + t * vx;
+                const double qy = static_cast<double>(a.y) + t * vy;
+                const int sx = static_cast<int>(std::lround(qx));
+                const int sy = static_cast<int>(std::lround(qy));
+                put_point_rgb(dbg_side, sx, sy, point3u{255, 255, 0}, dbg->point_radius);
+                put_point_rgb(dbg_all, sx, sy, point3u{255, 255, 0}, dbg->point_radius);
+            }
+        }
+
         if (do_dbg) {
             std::ostringstream name;
-            name << dbg->prefix << "side" << std::setw(2) << std::setfill('0') << si << "_sampling" << dbg->dump_ext;
+            name << dbg->prefix << "side" << std::setw(2) << std::setfill('0') << si
+                 << "_sampling_denseM" << M << "_L" << L << "_sigma" << std::fixed << std::setprecision(2) << sigma
+                 << dbg->dump_ext;
             libimages::debug_io::dump_image((dbg->out_dir / name.str()).string(), dbg_side, dbg->verbose, dbg->force_overwrite);
         }
 
-        out.push_back(std::move(colors));
+        out.push_back(std::move(colors_L));
     }
 
     if (do_dbg) {
