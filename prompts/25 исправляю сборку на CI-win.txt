@@ -1,0 +1,41 @@
+упала сборка на CI windows:
+FAILED: [code=1] src/CMakeFiles/libapp_tests.dir/algorithms/find_mask_borders_tests.cpp.obj
+C:\mingw64\bin\c++.exe  -ID:/a/ComputerVisionPuzzleSolver/ComputerVisionPuzzleSolver/libs/images -ID:/a/ComputerVisionPuzzleSolver/ComputerVisionPuzzleSolver/libs/base -isystem D:/a/ComputerVisionPuzzleSolver/ComputerVisionPuzzleSolver/third_party/googletest/googletest/include -isystem D:/a/ComputerVisionPuzzleSolver/ComputerVisionPuzzleSolver/third_party/googletest/googletest -O3 -DNDEBUG -std=c++20 -MD -MT src/CMakeFiles/libapp_tests.dir/algorithms/find_mask_borders_tests.cpp.obj -MF src\CMakeFiles\libapp_tests.dir\algorithms\find_mask_borders_tests.cpp.obj.d -o src/CMakeFiles/libapp_tests.dir/algorithms/find_mask_borders_tests.cpp.obj -c D:/a/ComputerVisionPuzzleSolver/ComputerVisionPuzzleSolver/src/algorithms/find_mask_borders_tests.cpp
+D:/a/ComputerVisionPuzzleSolver/ComputerVisionPuzzleSolver/src/algorithms/find_mask_borders_tests.cpp: In function 'void add_connected_border_noise(libimages::image8u&, int, int, int, int, int, int, uint32_t)':
+D:/a/ComputerVisionPuzzleSolver/ComputerVisionPuzzleSolver/src/algorithms/find_mask_borders_tests.cpp:445:19: error: 'clamp' is not a member of 'std'
+  445 |         xx = std::clamp(xx, 0, w - 1);
+      |                   ^~~~~
+D:/a/ComputerVisionPuzzleSolver/ComputerVisionPuzzleSolver/src/algorithms/find_mask_borders_tests.cpp:446:19: error: 'clamp' is not a member of 'std'
+  446 |         yy = std::clamp(yy, 0, h - 1);
+      |                   ^~~~~
+[39/48] Building CXX object src/CMakeFiles/libapp_tests.dir/algorithms/background_masking_tests.cpp.obj
+[40/48] Building CXX object src/CMakeFiles/app.dir/main.cpp.obj
+[41/48] Building CXX object src/CMakeFiles/libapp_tests.dir/algorithms/utils_tests.cpp.obj
+[42/48] Building CXX object third_party/googletest/googletest/CMakeFiles/gtest.dir/src/gtest-all.cc.obj
+ninja: build stopped: subcommand failed.
+Error: Process completed with exit code 1.
+
+но казалось бы у меня в корневом СMakeLists декларирован 20 стандарт
+cmake_minimum_required(VERSION 3.16)
+project(ComputerVisionPuzzleSolver LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+include(CTest)
+if (BUILD_TESTING)
+    # Keep gtest lightweight
+    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+    set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+
+    # MSVC: avoid CRT mismatch
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+
+    add_subdirectory(third_party/googletest)
+endif ()
+
+add_subdirectory(third_party/stb)
+add_subdirectory(libs/base)
+add_subdirectory(libs/images)
+add_subdirectory(src)

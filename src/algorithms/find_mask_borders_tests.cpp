@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <string>
 #include <vector>
+#include <algorithm> // std::clamp
 
 #include <gtest/gtest.h>
 
