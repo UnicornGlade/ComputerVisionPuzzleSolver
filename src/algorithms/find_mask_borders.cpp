@@ -1,9 +1,11 @@
 #include "find_mask_borders.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <queue>
 #include <sstream>
 #include <unordered_map>
 #include <utility>
@@ -15,6 +17,9 @@
 #include <libimages/algorithms/gaussian_blur.h>
 #include <libimages/algorithms/sobel_gradients.h>
 #include <libimages/debug_io.h>
+
+namespace fs = std::filesystem;
+using libimages::image8u;
 
 namespace find_mask_borders {
 
@@ -278,6 +283,254 @@ static float angle_mean_deg_from_pixels(const libimages::image32f& angle_deg_img
     return deg;
 }
 
+static inline bool in_bounds(int x, int y, int w, int h) { return x >= 0 && x < w && y >= 0 && y < h; }
+
+// signed area of cycle points in image coords (y down). clockwise => area < 0 typically.
+static double signed_area_cycle(const std::vector<point2i>& P) {
+    const int n = static_cast<int>(P.size());
+    double a = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const auto& p0 = P[i];
+        const auto& p1 = P[(i + 1) % n];
+        a += double(p0.x) * double(p1.y) - double(p1.x) * double(p0.y);
+    }
+    return 0.5 * a;
+}
+
+// Distance from point to segment using pixel centers.
+static float dist_point_to_segment_center(point2i p, point2i a, point2i b) {
+    const double px = double(p.x) + 0.5;
+    const double py = double(p.y) + 0.5;
+    const double ax = double(a.x) + 0.5;
+    const double ay = double(a.y) + 0.5;
+    const double bx = double(b.x) + 0.5;
+    const double by = double(b.y) + 0.5;
+
+    const double abx = bx - ax;
+    const double aby = by - ay;
+    const double apx = px - ax;
+    const double apy = py - ay;
+
+    const double denom = abx * abx + aby * aby;
+    if (denom < 1e-18) {
+        const double dx = px - ax;
+        const double dy = py - ay;
+        return float(std::sqrt(dx * dx + dy * dy));
+    }
+
+    double t = (apx * abx + apy * aby) / denom;
+    if (t < 0.0) t = 0.0;
+    if (t > 1.0) t = 1.0;
+
+    const double cx = ax + t * abx;
+    const double cy = ay + t * aby;
+
+    const double dx = px - cx;
+    const double dy = py - cy;
+    return float(std::sqrt(dx * dx + dy * dy));
+}
+
+// Moore-neighbor tracing directions in CLOCKWISE order (image coords y down):
+// E, SE, S, SW, W, NW, N, NE
+static constexpr std::array<int, 8> kDx = { 1, 1, 0,-1,-1,-1, 0, 1 };
+static constexpr std::array<int, 8> kDy = { 0, 1, 1, 1, 0,-1,-1,-1 };
+
+static int dir_index_from_delta(int dx, int dy) {
+    for (int i = 0; i < 8; ++i) {
+        if (kDx[i] == dx && kDy[i] == dy) return i;
+    }
+    return -1;
+}
+
+// Find a boundary pixel of object (object==255, and has at least one 0 neighbor in 8-neighborhood, outside treated 0)
+static bool find_object_boundary_start(const image8u& obj, point2i& out_start) {
+    const int w = obj.width();
+    const int h = obj.height();
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            if (obj(y, x) != 255) continue;
+
+            bool has_bg = false;
+            for (int k = 0; k < 8; ++k) {
+                const int xx = x + kDx[k];
+                const int yy = y + kDy[k];
+                if (!in_bounds(xx, yy, w, h)) { has_bg = true; break; }
+                if (obj(yy, xx) == 0) { has_bg = true; break; }
+            }
+            if (has_bg) {
+                out_start = point2i{x, y};
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Robust contour extraction from object_mask (preferred).
+// Returns a closed cycle of boundary pixels in clockwise order (if possible).
+static std::vector<point2i> trace_boundary_moore(const image8u& object_mask) {
+    check_mask01(object_mask);
+
+    const int w = object_mask.width();
+    const int h = object_mask.height();
+
+    point2i start{-1, -1};
+    if (!find_object_boundary_start(object_mask, start)) return {};
+
+    // backtrack starts as W of start (background/outside)
+    point2i b{start.x - 1, start.y};
+    point2i c = start;
+
+    std::vector<point2i> contour;
+    contour.reserve(static_cast<std::size_t>(w + h) * 2);
+
+    // Need second point to define stop condition.
+    point2i second{-1, -1};
+    int guard = 0;
+    const int guard_max = w * h * 10;
+
+    while (guard++ < guard_max) {
+        contour.push_back(c);
+
+        // direction from c to b (backtrack) must be one of 8 dirs if adjacent;
+        // if not adjacent (at image boundary), clamp to W.
+        int dbx = b.x - c.x;
+        int dby = b.y - c.y;
+        if (dbx < -1) dbx = -1; if (dbx > 1) dbx = 1;
+        if (dby < -1) dby = -1; if (dby > 1) dby = 1;
+
+        int idx_b = dir_index_from_delta(dbx, dby);
+        if (idx_b < 0) idx_b = 4; // W
+
+        // Search neighbors clockwise starting from next after backtrack.
+        point2i next{-1, -1};
+        point2i new_b = b;
+
+        for (int s = 1; s <= 8; ++s) {
+            const int idx = (idx_b + s) & 7;
+            const int xx = c.x + kDx[idx];
+            const int yy = c.y + kDy[idx];
+
+            if (!in_bounds(xx, yy, w, h)) continue;
+            if (object_mask(yy, xx) != 255) continue;
+
+            next = point2i{xx, yy};
+
+            // new backtrack is the neighbor just before idx in the scan order
+            const int idx_prev = (idx - 1) & 7;
+            new_b = point2i{c.x + kDx[idx_prev], c.y + kDy[idx_prev]};
+            break;
+        }
+
+        if (next.x < 0) {
+            // can't continue -> not a valid boundary
+            return {};
+        }
+
+        if (second.x < 0) second = next;
+
+        // termination: back to start and next is second
+        if (c.x == start.x && c.y == start.y && next.x == second.x && next.y == second.y && contour.size() > 2) break;
+
+        b = new_b;
+        c = next;
+    }
+
+    if (contour.size() < 4) return {};
+
+    // Ensure clockwise by area sign (clockwise in image coords tends to have area < 0)
+    const double a = signed_area_cycle(contour);
+    if (a > 0.0) std::reverse(contour.begin(), contour.end());
+
+    return contour;
+}
+
+// Fallback: close 1-pixel gaps in border_mask (in-place) using 4 patterns.
+static image8u fill_single_pixel_gaps(const image8u& border_mask) {
+    check_mask01(border_mask);
+    const int w = border_mask.width();
+    const int h = border_mask.height();
+
+    image8u out = border_mask;
+
+    for (int y = 1; y < h - 1; ++y) {
+        for (int x = 1; x < w - 1; ++x) {
+            if (out(y, x) == 255) continue;
+
+            const bool lr = (border_mask(y, x - 1) == 255) && (border_mask(y, x + 1) == 255);
+            const bool ud = (border_mask(y - 1, x) == 255) && (border_mask(y + 1, x) == 255);
+            const bool d1 = (border_mask(y - 1, x - 1) == 255) && (border_mask(y + 1, x + 1) == 255);
+            const bool d2 = (border_mask(y - 1, x + 1) == 255) && (border_mask(y + 1, x - 1) == 255);
+
+            if (lr || ud || d1 || d2) out(y, x) = 255;
+        }
+    }
+    return out;
+}
+
+// Debug helper: show contour + corners + sides
+static image8u visualize_contour_sides(const image8u& base_mask,
+                                      const std::vector<point2i>& corners,
+                                      const std::vector<std::vector<point2i>>* sides) {
+    const int w = base_mask.width();
+    const int h = base_mask.height();
+    image8u rgb(w, h, 3);
+    rgb.fill(std::uint8_t(0));
+
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            if (base_mask(y, x) == 255) {
+                rgb(y, x, 0) = 90;
+                rgb(y, x, 1) = 90;
+                rgb(y, x, 2) = 90;
+            }
+        }
+    }
+
+    auto put_disk = [&](int x, int y, std::uint8_t r, std::uint8_t g, std::uint8_t b, int rad) {
+        for (int dy = -rad; dy <= rad; ++dy)
+            for (int dx = -rad; dx <= rad; ++dx) {
+                const int xx = x + dx, yy = y + dy;
+                if (!in_bounds(xx, yy, w, h)) continue;
+                rgb(yy, xx, 0) = r; rgb(yy, xx, 1) = g; rgb(yy, xx, 2) = b;
+            }
+    };
+
+    if (sides) {
+        std::uint32_t seed = 123u;
+        for (std::size_t si = 0; si < sides->size(); ++si) {
+            seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+            const std::uint8_t cr = std::uint8_t(seed & 0xFFu);
+            const std::uint8_t cg = std::uint8_t((seed >> 8) & 0xFFu);
+            const std::uint8_t cb = std::uint8_t((seed >> 16) & 0xFFu);
+
+            for (const auto& p : (*sides)[si]) {
+                rgb(p.y, p.x, 0) = cr;
+                rgb(p.y, p.x, 1) = cg;
+                rgb(p.y, p.x, 2) = cb;
+            }
+        }
+    }
+
+    for (const auto& c : corners) put_disk(c.x, c.y, 255, 0, 0, 2);
+    return rgb;
+}
+
+static bool dbg_on(const SplitSidesDebugParams* dbg) {
+    return dbg && !dbg->out_dir.empty();
+}
+
+static void dbg_dump(const SplitSidesDebugParams* dbg, const std::string& name, const image8u& img) {
+    if (!dbg_on(dbg)) return;
+    libimages::debug_io::dump_image((dbg->out_dir / (dbg->prefix + name + dbg->dump_ext)).string(),
+                                    img,
+                                    dbg->verbose,
+                                    dbg->force_overwrite);
+}
+
+// ---------------------------------------------------------------
+// NEW IMPLEMENTATION (cycle simplification until K segments)
+// ---------------------------------------------------------------
 std::vector<std::vector<point2i>> split_border_into_sides(const libimages::image8u& object_mask,
                                                          const libimages::image8u& border_mask,
                                                          int side_count,
@@ -289,327 +542,129 @@ std::vector<std::vector<point2i>> split_border_into_sides(const libimages::image
             "object_mask and border_mask must have same size",
             object_mask.width(), object_mask.height(), border_mask.width(), border_mask.height());
 
-    const int w = object_mask.width();
-    const int h = object_mask.height();
+    // 1) Get a robust ordered cycle.
+    // Prefer object_mask contour tracing (handles degree>2 and border gaps).
+    std::vector<point2i> P = trace_boundary_moore(object_mask);
 
-    const int pad = (dbg ? dbg->pad : 10);
-    const float blur_sigma = (dbg ? dbg->blur_sigma : 0.5f);
-
-    const int wp = w + 2 * pad;
-    const int hp = h + 2 * pad;
-
-    // Padded float image for Sobel.
-    libimages::image32f m(wp, hp, 1);
-    m.fill(0.0f);
-    for (int j = 0; j < h; ++j)
-        for (int i = 0; i < w; ++i)
-            m(j + pad, i + pad) = static_cast<float>(object_mask(j, i));
-
-    // Debug: padded mask before blur
-    if (dbg && !dbg->out_dir.empty()) {
-        libimages::image8u m_u8(wp, hp, 1);
-        for (int y = 0; y < hp; ++y)
-            for (int x = 0; x < wp; ++x)
-                m_u8(y, x) = (m(y, x) > 0.0f) ? 255 : 0;
-
-        auto base = to_rgb_darken(m_u8, 1);
-        draw_rect_rgb_inplace(base, pad, pad, pad + w - 1, pad + h - 1, point3u{255, 255, 0}, 1);
-        dump_dbg(dbg, "pad00_mask_roi", base);
+    // Fallback: try to heal 1px gaps in border_mask and trace boundary of that as "object".
+    if (P.empty()) {
+        const image8u healed = fill_single_pixel_gaps(border_mask);
+        P = trace_boundary_moore(healed);
+        if (dbg_on(dbg)) dbg_dump(dbg, "cyc00_border_healed", healed);
     }
 
-    // Blur before Sobel (padded)
-    m = libimages::gaussian_blur_gray(m, blur_sigma);
-    if (dbg && !dbg->out_dir.empty()) {
-        auto blur_u8 = gray32f_to_u8_clamp_local(m);
-        auto blur_rgb = to_rgb_darken(blur_u8, 1);
-        draw_rect_rgb_inplace(blur_rgb, pad, pad, pad + w - 1, pad + h - 1, point3u{255, 255, 0}, 1);
-        dump_dbg(dbg, "pad01_blur_roi", blur_rgb);
+    if (P.size() < 4) return {};
+
+    const int N = static_cast<int>(P.size());
+    if (side_count >= N) {
+        std::vector<std::vector<point2i>> out;
+        out.reserve(static_cast<std::size_t>(N));
+        for (const auto& p : P) out.push_back({p});
+        return out;
     }
 
-    const libimages::Gradients g = libimages::sobel_gradients(m);
+    // 2) Simplify the cycle by repeatedly removing the vertex with minimal local error.
+    std::vector<int> prv(static_cast<std::size_t>(N));
+    std::vector<int> nxt(static_cast<std::size_t>(N));
+    std::vector<std::uint8_t> alive(static_cast<std::size_t>(N), 1);
+    std::vector<std::uint32_t> ver(static_cast<std::size_t>(N), 0);
 
-    // Debug: angle HSV + arrows (both are padded-sized)
-    if (dbg && !dbg->out_dir.empty()) {
-        auto hsv = libimages::visualize_angle_hsv(g.angle, g.mag);
-        draw_rect_rgb_inplace(hsv, pad, pad, pad + w - 1, pad + h - 1, point3u{255, 255, 0}, 1);
-        dump_dbg(dbg, "pad02_angle_hsv", hsv);
-
-        auto blur_u8 = gray32f_to_u8_clamp_local(m);
-        auto base_rgb = to_rgb_darken(blur_u8, 1);
-        draw_rect_rgb_inplace(base_rgb, pad, pad, pad + w - 1, pad + h - 1, point3u{255, 255, 0}, 1);
-
-        const int stride = dbg->arrow_stride;
-        const float min_mag = dbg->arrow_min_mag;
-        const float arrow_len = dbg->arrow_len_px;
-        const int thick = dbg->arrow_thickness;
-
-        auto arrows = visualize_grad_arrows_rgb(base_rgb, g, min_mag, stride, arrow_len, thick);
-        dump_dbg(dbg, "pad03_grad_arrows", arrows);
-
-        dump_dbg(dbg, "pad04_dx_signed_u8", libimages::visualize_signed_to_u8(g.dx));
-        dump_dbg(dbg, "pad05_dy_signed_u8", libimages::visualize_signed_to_u8(g.dy));
-        dump_dbg32_as_u8(dbg, "pad06_mag_u8", g.mag);
+    for (int i = 0; i < N; ++i) {
+        prv[std::size_t(i)] = (i - 1 + N) % N;
+        nxt[std::size_t(i)] = (i + 1) % N;
     }
 
-    // Read padded gradients using original coordinates
-    auto angle_at = [&](int y, int x) -> float { return g.angle(y + pad, x + pad); };
-
-    // Collect border ids (un-padded)
-    const int N = w * h;
-    std::vector<int> id_to_idx(static_cast<std::size_t>(N), -1);
-    std::vector<int> border_ids;
-    border_ids.reserve(1024);
-
-    for (int j = 0; j < h; ++j) {
-        for (int i = 0; i < w; ++i) {
-            if (border_mask(j, i) != 255) continue;
-            const int id = lin_id(i, j, w);
-            id_to_idx[static_cast<std::size_t>(id)] = static_cast<int>(border_ids.size());
-            border_ids.push_back(id);
-        }
-    }
-    if (border_ids.empty()) return {};
-
-    // Build adjacency edges (8-neighborhood, unique via forward directions).
-    std::vector<Edge> edges;
-    edges.reserve(border_ids.size() * 4);
-
-    auto add_edge_if = [&](int x0, int y0, int x1, int y1) {
-        if (x1 < 0 || x1 >= w || y1 < 0 || y1 >= h) return;
-        if (border_mask(y0, x0) != 255) return;
-        if (border_mask(y1, x1) != 255) return;
-
-        const float a0 = angle_at(y0, x0);
-        const float a1 = angle_at(y1, x1);
-        const float d = libimages::angle_diff_deg(a0, a1);
-
-        edges.push_back(Edge{lin_id(x0, y0, w), lin_id(x1, y1, w), d});
+    auto calc_err = [&](int i) -> float {
+        const int a = prv[std::size_t(i)];
+        const int b = nxt[std::size_t(i)];
+        if (a == b) return std::numeric_limits<float>::infinity();
+        return dist_point_to_segment_center(P[std::size_t(i)], P[std::size_t(a)], P[std::size_t(b)]);
     };
 
-    for (int j = 0; j < h; ++j) {
-        for (int i = 0; i < w; ++i) {
-            if (border_mask(j, i) != 255) continue;
-            add_edge_if(i, j, i + 1, j);     // right
-            add_edge_if(i, j, i, j + 1);     // down
-            add_edge_if(i, j, i + 1, j + 1); // down-right
-            add_edge_if(i, j, i - 1, j + 1); // down-left
+    struct Node { float err; int i; std::uint32_t v; };
+    struct Cmp { bool operator()(const Node& a, const Node& b) const { return a.err > b.err; } };
+    std::priority_queue<Node, std::vector<Node>, Cmp> pq;
+
+    for (int i = 0; i < N; ++i) pq.push(Node{calc_err(i), i, ver[std::size_t(i)]});
+
+    int alive_count = N;
+
+    while (alive_count > side_count) {
+        rassert(!pq.empty(), "split_border_into_sides: heap empty");
+
+        const Node t = pq.top();
+        pq.pop();
+
+        if (t.i < 0 || t.i >= N) continue;
+        if (!alive[std::size_t(t.i)]) continue;
+        if (t.v != ver[std::size_t(t.i)]) continue;
+
+        const int a = prv[std::size_t(t.i)];
+        const int b = nxt[std::size_t(t.i)];
+        if (a == b) break;
+
+        // remove vertex t.i
+        nxt[std::size_t(a)] = b;
+        prv[std::size_t(b)] = a;
+        alive[std::size_t(t.i)] = 0;
+        --alive_count;
+
+        // update neighbors
+        for (int vtx : {a, b}) {
+            if (!alive[std::size_t(vtx)]) continue;
+            ++ver[std::size_t(vtx)];
+            pq.push(Node{calc_err(vtx), vtx, ver[std::size_t(vtx)]});
         }
     }
 
-        // Compact edges to DSU indices once (and keep pixel coords for debug).
-    struct EdgeC final {
-        int ia = -1;
-        int ib = -1;
-        float ang = 0.0f;
-        point2i pa{};
-        point2i pb{};
-    };
+    // 3) Collect remaining corners in cycle order (using nxt links).
+    int start = -1;
+    for (int i = 0; i < N; ++i) if (alive[std::size_t(i)]) { start = i; break; }
+    rassert(start >= 0, "split_border_into_sides: no corners alive");
 
-    std::vector<EdgeC> edges_c;
-    edges_c.reserve(edges.size());
-
-    for (const auto& e : edges) {
-        const int ia = id_to_idx[static_cast<std::size_t>(e.a)];
-        const int ib = id_to_idx[static_cast<std::size_t>(e.b)];
-        if (ia < 0 || ib < 0) continue;
-
-        const int ax = e.a % w;
-        const int ay = e.a / w;
-        const int bx = e.b % w;
-        const int by = e.b / w;
-
-        // Sanity: must be 8-neighbors (for debugging confidence)
-        rassert(std::abs(ax - bx) <= 1 && std::abs(ay - by) <= 1, "Non-neighbor edge unexpectedly",
-                ax, ay, bx, by);
-
-        edges_c.push_back(EdgeC{ia, ib, e.ang_diff, point2i{ax, ay}, point2i{bx, by}});
+    std::vector<int> corners_idx;
+    corners_idx.reserve(std::size_t(alive_count));
+    {
+        int cur = start;
+        int guard = 0;
+        do {
+            rassert(guard++ < N + 10, "split_border_into_sides: corner traversal guard");
+            corners_idx.push_back(cur);
+            cur = nxt[std::size_t(cur)];
+        } while (cur != start);
     }
 
-    DisjointSetUnion dsu(border_ids.size());
-    int comps = static_cast<int>(border_ids.size());
+    // 4) Build sides as arcs on ORIGINAL contour P between consecutive corners.
+    std::vector<std::vector<point2i>> sides;
+    sides.reserve(corners_idx.size());
 
-    constexpr float kBinStepDeg = 15.0f;
-    constexpr float kMaxDiffDeg = 180.0f;
-    const int nbins = static_cast<int>(std::ceil(kMaxDiffDeg / kBinStepDeg));
+    for (std::size_t si = 0; si < corners_idx.size(); ++si) {
+        const int a = corners_idx[si];
+        const int b = corners_idx[(si + 1) % corners_idx.size()];
 
-    // Bucket edges by [0,15), [15,30), ...
-    std::vector<std::vector<int>> bins(static_cast<std::size_t>(nbins));
-    bins.shrink_to_fit(); // keeps it simple to view in debugger
-
-    for (int ei = 0; ei < static_cast<int>(edges_c.size()); ++ei) {
-        float d = edges_c[static_cast<std::size_t>(ei)].ang;
-        d = std::clamp(d, 0.0f, kMaxDiffDeg);
-        int b = static_cast<int>(d / kBinStepDeg);
-        if (b >= nbins) b = nbins - 1;
-        bins[static_cast<std::size_t>(b)].push_back(ei);
-    }
-
-    auto comp_size = [&](int idx) -> std::size_t {
-        return dsu.set_size(static_cast<std::size_t>(idx));
-    };
-
-    // Merge bin-by-bin. Inside bin: greedy pick best edge among eligible in this bin.
-    for (int b = 0; b < nbins && comps > side_count; ++b) {
-        auto& bin = bins[static_cast<std::size_t>(b)];
-        if (bin.empty()) continue;
-
-        while (comps > side_count) {
-            int best_ei = -1;
-            double best_score = -1.0;     // maximize ratio max/min
-            std::size_t best_max = 0;     // tie-breaker
-            float best_ang = 1e9f;        // tie-breaker: smaller ang
-
-            for (int kk = 0; kk < static_cast<int>(bin.size()); ++kk) {
-                const int ei = bin[static_cast<std::size_t>(kk)];
-                const auto& e = edges_c[static_cast<std::size_t>(ei)];
-
-                const std::size_t ra = dsu.find(static_cast<std::size_t>(e.ia));
-                const std::size_t rb = dsu.find(static_cast<std::size_t>(e.ib));
-                if (ra == rb) continue;
-
-                const std::size_t sa = dsu.set_size(static_cast<std::size_t>(e.ia));
-                const std::size_t sb = dsu.set_size(static_cast<std::size_t>(e.ib));
-
-                const std::size_t mn = std::min(sa, sb);
-                const std::size_t mx = std::max(sa, sb);
-
-                // sizes are always >=1, but keep robust
-                const double score = (mn > 0) ? (static_cast<double>(mx) / static_cast<double>(mn)) : 1e300;
-
-                // primary: maximize ratio (big+small)
-                // tie1: maximize mx (prefer larger big set)
-                // tie2: minimize ang
-                if (best_ei < 0 ||
-                    score > best_score ||
-                    (score == best_score && mx > best_max) ||
-                    (score == best_score && mx == best_max && e.ang < best_ang)) {
-                    best_ei = ei;
-                    best_score = score;
-                    best_max = mx;
-                    best_ang = e.ang;
-                }
-            }
-
-            if (best_ei < 0) break; // no eligible merges in this bin
-
-            const auto& e = edges_c[static_cast<std::size_t>(best_ei)];
-
-            // === IMPORTANT DEBUG: print exact pixels + sizes ===
-            if (dbg && dbg->verbose) {
-                const std::size_t sa = dsu.set_size(static_cast<std::size_t>(e.ia));
-                const std::size_t sb = dsu.set_size(static_cast<std::size_t>(e.ib));
-                const std::size_t mn = std::min(sa, sb);
-                const std::size_t mx = std::max(sa, sb);
-                const double sc = (mn > 0) ? (static_cast<double>(mx) / static_cast<double>(mn)) : 1e300;
-
-                std::cerr << "unite: (" << e.pa.x << "," << e.pa.y << ") <-> (" << e.pb.x << "," << e.pb.y << ")"
-                          << " ang=" << e.ang
-                          << " sizes=(" << sa << "," << sb << ")"
-                          << " score=" << sc
-                          << "\n";
-            }
-
-            if (dsu.unite(static_cast<std::size_t>(e.ia), static_cast<std::size_t>(e.ib))) {
-                comps -= 1;
-            }
+        std::vector<point2i> side;
+        int cur = a;
+        int guard = 0;
+        while (cur != b) {
+            rassert(guard++ < N + 10, "split_border_into_sides: side guard");
+            side.push_back(P[std::size_t(cur)]);
+            cur = (cur + 1) % N;
         }
+        sides.push_back(std::move(side));
     }
 
-    // If still too many components (graph disconnected / too sparse), keep biggest side_count later.
-    // --- end NEW MERGE LOGIC ---
+    // Debug dumps
+    if (dbg_on(dbg)) {
+        std::vector<point2i> corners_xy;
+        corners_xy.reserve(corners_idx.size());
+        for (int idx : corners_idx) corners_xy.push_back(P[std::size_t(idx)]);
 
-    // Gather components.
-    std::vector<int> root_to_comp(border_ids.size(), -1);
-    std::vector<std::vector<point2i>> groups;
-
-    for (int idx = 0; idx < static_cast<int>(border_ids.size()); ++idx) {
-        const std::size_t r = dsu.find(static_cast<std::size_t>(idx));
-        int& slot = root_to_comp[static_cast<std::size_t>(r)];
-        if (slot < 0) {
-            slot = static_cast<int>(groups.size());
-            groups.emplace_back();
-        }
-        const int id = border_ids[static_cast<std::size_t>(idx)];
-        const int x = id % w;
-        const int y = id / w;
-        groups[static_cast<std::size_t>(slot)].push_back(point2i{x, y});
+        dbg_dump(dbg, "cyc01_contour_mask", border_mask);
+        dbg_dump(dbg, "cyc02_corners", visualize_contour_sides(border_mask, corners_xy, nullptr));
+        dbg_dump(dbg, "cyc03_sides", visualize_contour_sides(border_mask, corners_xy, &sides));
     }
 
-    if (static_cast<int>(groups.size()) > side_count) {
-        std::sort(groups.begin(), groups.end(),
-                  [](const auto& a, const auto& b) { return a.size() > b.size(); });
-        groups.resize(static_cast<std::size_t>(side_count));
-    }
-
-    // Order sides around object centroid (clockwise).
-    double ocx = 0.0, ocy = 0.0;
-    compute_object_centroid(object_mask, ocx, ocy);
-
-    struct SideMeta { std::vector<point2i> pix; double ang = 0.0; };
-    std::vector<SideMeta> meta;
-    meta.reserve(groups.size());
-
-    for (auto& s : groups) {
-        double sx = 0.0, sy = 0.0;
-        for (const auto& p : s) { sx += p.x; sy += p.y; }
-        const double cx = s.empty() ? 0.0 : sx / static_cast<double>(s.size());
-        const double cy = s.empty() ? 0.0 : sy / static_cast<double>(s.size());
-
-        const double dx = cx - ocx;
-        const double dy = cy - ocy;
-        double ang = std::atan2(-dy, dx);
-        if (ang < 0.0) ang += 2.0 * 3.14159265358979323846;
-
-        meta.push_back(SideMeta{std::move(s), ang});
-    }
-
-    std::sort(meta.begin(), meta.end(), [](const SideMeta& a, const SideMeta& b) { return a.ang < b.ang; });
-
-    // Mean inward angle for side pixels using padded gradients.
-    auto mean_inward_deg_for_side = [&](const std::vector<point2i>& pix) -> float {
-        if (pix.empty()) return 0.0f;
-        double sx = 0.0, sy = 0.0;
-        for (const auto& p : pix) {
-            const double deg = static_cast<double>(angle_at(p.y, p.x));
-            const double a = deg * (3.14159265358979323846 / 180.0);
-            sx += std::cos(a);
-            sy += std::sin(a);
-        }
-        double ang = std::atan2(sy, sx) * (180.0 / 3.14159265358979323846);
-        if (ang < 0.0) ang += 360.0;
-        return static_cast<float>(ang);
-    };
-
-    // Order pixels within each side approximately clockwise along the side using tangent = rotate(inward, +90).
-    std::vector<std::vector<point2i>> out;
-    out.reserve(meta.size());
-
-    for (auto& sm : meta) {
-        auto& s = sm.pix;
-        if (s.size() <= 1) { out.push_back(std::move(s)); continue; }
-
-        const float mean_inward_deg = mean_inward_deg_for_side(s);
-        const double a = static_cast<double>(mean_inward_deg) * (3.14159265358979323846 / 180.0);
-        const double nx = std::cos(a);
-        const double ny = std::sin(a);
-
-        // tangent direction for clockwise traversal: t = rotate(inward, +90) = (-ny, nx)
-        const double tx = -ny;
-        const double ty = nx;
-
-        std::sort(s.begin(), s.end(), [&](const point2i& p1, const point2i& p2) {
-            const double pr1 = p1.x * tx + p1.y * ty;
-            const double pr2 = p2.x * tx + p2.y * ty;
-            if (pr1 != pr2) return pr1 < pr2;
-            const double or1 = p1.x * nx + p1.y * ny;
-            const double or2 = p2.x * nx + p2.y * ny;
-            return or1 < or2;
-        });
-
-        out.push_back(std::move(s));
-    }
-
-    return out;
+    return sides;
 }
 
 std::vector<std::vector<point3u>> sample_sides_colors(const libimages::image8u& image_rgb_or_gray,
